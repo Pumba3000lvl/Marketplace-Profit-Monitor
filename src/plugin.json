@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
   "type": "datasource",
-  "name": "Marketplace Profit Monitor",
+  "name": "Мониторинг прибыли маркетплейсов",
   "id": "pumba3000lvl-profitmonitor-datasource",
   "category": "other",
   "metrics": true,
@@ -9,7 +9,7 @@
   "executable": "gpx_marketplace_profit",
   "alerting": true,
   "info": {
-    "description": "Query Wildberries and Ozon seller APIs from Grafana. Marketplace response normalization and profit calculations are not included yet.",
+    "description": "Запрашивайте API продавцов Wildberries и Ozon из Grafana. Доступны нормализованные метрики товаров; часть данных о расходах и прибыли пока не предоставляется маркетплейсами.",
     "author": {
       "name": "Pumba3000lvl"
     },
@@ -20,15 +20,15 @@
     },
     "links": [
       {
-        "name": "documentation",
+        "name": "Документация",
         "url": "https://github.com/Pumba3000lvl/Marketplace-Profit-Monitor#readme"
       },
       {
-        "name": "repository",
+        "name": "Репозиторий",
         "url": "https://github.com/Pumba3000lvl/Marketplace-Profit-Monitor"
       },
       {
-        "name": "raise issue",
+        "name": "Сообщить о проблеме",
         "url": "https://github.com/Pumba3000lvl/Marketplace-Profit-Monitor/issues"
       }
     ],
@@ -67,7 +67,7 @@
       "headers": [
         {
           "name": "Client-Id",
-          "content": "{{ .SecureJsonData.ozonClientId }}"
+          "content": "{{ .JsonData.ozonClientId }}"
         },
         {
           "name": "Api-Key",

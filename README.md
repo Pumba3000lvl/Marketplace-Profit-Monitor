@@ -1,15 +1,18 @@
-# Marketplace Profit Monitor
+# Мониторинг прибыли на маркетплейсах
 
-A Grafana data source plugin scaffold for querying seller APIs from Wildberries and Ozon. It currently sends one API request per query and displays the response as a table; turning marketplace payloads into normalized sales, costs, and profit metrics is future work.
+Плагин Grafana для запросов к API продавцов Wildberries и Ozon. Поддерживаются прямые запросы к API и нормализованные метрики товаров. Доступные комиссии, цены и исходные данные для расчёта маржи отображаются без подстановки отсутствующих расходов.
 
-## Prerequisites
+## Требования
 
-- Node.js 22 or newer and npm
-- Docker Compose (the Makefile uses local Go 1.23.5+ when available, or Docker to build/test the backend)
+- Grafana 11 или новее.
+- Node.js 22 или новее и npm.
+- Docker с поддержкой Compose и запущенным Docker Engine. Makefile использует Go 1.23.5 или новее; если Go не установлен, для сборки и тестов backend нужен Docker.
 
-## Build and run locally
+## Сборка и локальный запуск
 
-Build the frontend bundle and Linux backend executable:
+Выполняйте команды из корня репозитория — каталога, в котором находится `docker-compose.yml`. Если Compose сообщает, что не найден файл конфигурации, перейдите в этот каталог или явно укажите файл через `-f`.
+
+Соберите frontend-пакет и исполняемый файл backend для Linux:
 
 ```sh
 npm ci
@@ -17,20 +20,101 @@ make build
 docker compose up -d
 ```
 
-Open [http://localhost:3000](http://localhost:3000) and sign in with Grafana's initial local-development credentials, `admin` / `admin`. Add **Marketplace Profit Monitor** under **Connections → Data sources**, configure the API credentials you need, and select **Save & test**. The health check verifies that at least one supported credential is configured; it does not call a marketplace API.
+Откройте [http://localhost:3000](http://localhost:3000) и войдите с начальными учётными данными Grafana для локальной разработки: `admin` / `admin`. Docker Compose создаёт источник данных **Мониторинг прибыли маркетплейсов (оповещения)** со стабильным UID `marketplace-profit-monitor`. Найдите его в разделе **Подключения → Источники данных** и укажите учётные данные нужных маркетплейсов. В файлах начальной настройки нет ключей доступа. API-ключи Wildberries и Ozon хранятся в зашифрованном поле Grafana `secureJsonData`, а Ozon Client-Id — в `jsonData`. При создании экземпляра backend Grafana расшифровывает защищённые настройки в `backend.DataSourceInstanceSettings.DecryptedSecureJSONData`; `QueryData` использует эти настройки экземпляра и не извлекает ключи из `PluginContext`. Перед проверкой подключения сохраните источник данных. Плагин проверяет только настроенные маркетплейсы через backend; встроенная проверка **Сохранить и проверить** в Grafana также выполняет запрос только на чтение к каждому настроенному маркетплейсу. Поля Telegram в редакторе источника данных оставлены для совместимости и не используются контактными точками оповещений, созданными через provisioning.
 
-The query editor lets you select a route, HTTP method, relative API path, and optional JSON request body. Paths must start with `/` and are appended to the selected marketplace API host. Successful requests are returned as a table with the route, HTTP status, and raw JSON response. Use the official marketplace API documentation to choose supported paths and request bodies:
+### Оповещения в Telegram
 
-- [Wildberries seller API](https://dev.wildberries.ru/)
-- [Ozon Seller API](https://docs.ozon.ru/api/seller/)
+Для Grafana OSS создаются две контактные точки Telegram, а правила маршрутизируются по метке `severity`: `critical` направляется в чат критических оповещений, `warning` — в чат предупреждений. Для обеих контактных точек используется один токен бота. Оповещения без одного из этих значений `severity` по умолчанию поступают в контактную точку предупреждений. В сообщениях используются русские статусы, заголовки и описания. Пять правил оповещения маркетплейсов остаются приостановленными, пока соответствующие метрики не будут реализованы и проверены.
 
-The `wb-tariffs` route targets Wildberries' common API (`common-api.wildberries.ru`), while `wb-prices` targets its prices and discounts API (`discounts-prices-api.wildberries.ru`). The Wildberries developer portal is documentation, not an API host. The `ozon` route targets `api-seller.ozon.ru`.
+1. Создайте бота через [@BotFather](https://t.me/BotFather), начните с ним личный диалог командой `/start` либо добавьте его в нужную группу или канал и разрешите отправку сообщений. Узнайте числовой ID нужного чата из обновлений Bot API (`message.chat.id` или `channel_post.chat.id`); для этого можно использовать метод [`getUpdates`](https://core.telegram.org/bots/api#getupdates). Запрос выполняйте только локально и не публикуйте URL с токеном или содержимое обновлений. При необходимости укажите разные чаты для критических оповещений и предупреждений.
+2. Скопируйте `.env.example` в `.env` в корне репозитория и задайте `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CRITICAL_CHAT_ID` и `TELEGRAM_WARNING_CHAT_ID`. Храните `.env` только локально: этот файл исключён из Git. Не отправляйте токены в чат, не добавляйте их в коммиты и не помещайте в файлы provisioning. Если токен стал кому-либо известен, отзовите его через @BotFather и настройте новый локально.
+3. Пересоздайте Grafana, чтобы загрузить переменные окружения и контактные точки:
 
-The plugin's `plugin.json` also declares Grafana data-source proxy routes with these same IDs. The current Go backend sends queries directly to the fixed API hosts using the configured credentials; the proxy routes are available for future browser-side/plugin proxy calls and do not change that backend request path.
+   ```sh
+   docker compose up -d --force-recreate grafana
+   ```
 
-## Wildberries Go client
+   Пустые значения допустимы — Grafana запустится и без Telegram, но контактные точки не будут работать, пока не заданы все три переменные. После настройки откройте **Оповещения → Контактные точки** и отдельно проверьте каждую точку. Созданные через provisioning контактные точки нельзя редактировать в интерфейсе: чтобы изменить их, обновите `.env` и пересоздайте Grafana.
 
-The `pkg/wildberries` package provides a typed seller API client:
+Файл `provisioning/alerting/marketplace-telegram.yml` задаёт всё дерево политик уведомлений. При загрузке Grafana заменяет им всё дерево, включая маршруты, созданные в интерфейсе. Перед использованием на экземпляре с уже настроенными политиками экспортируйте их и объедините с этим файлом, чтобы сохранить существующие настройки. Файловый provisioning правил оповещения поддерживается Grafana OSS, но не Grafana Cloud.
+
+### Правила оповещения Grafana
+
+Docker Compose подключает к Grafana каталоги provisioning источников данных и оповещений и загружает пять правил из `provisioning/alerting/marketplace-alerts.yml`. Манифест плагина включает поддержку оповещений и требует Grafana версии 11 или новее. Правила проверяются раз в минуту, используют числовые ряды с метками товаров и сохраняют состояния `NoData` и `Error`. Все правила создаются **приостановленными**: текущие поставщики не предоставляют данные, необходимые для этих финансовых сравнений, а подстановка вымышленных значений недопустима.
+
+| Правило | Порог | Состояние и недостающие данные |
+| --- | --- | --- |
+| Низкая маржинальность товара | Маржа ниже 10% в течение 5 минут | Приостановлено: сборщики пока не предоставляют полные расходы и чистую маржу. |
+| Рост комиссии маркетплейса | Рост комиссии более 5% за 7 дней | Приостановлено: не сохраняется история комиссии по товарам; данные о комиссии Ozon недоступны. |
+| Цена товара более чем на 5% ниже цены конкурента | Разница с ценой конкурента ниже −5% | Приостановлено: цены конкурентов не собираются. |
+| Высокая доля расходов на хранение | Расходы на хранение выше 15% выручки | Приостановлено: нет расходов на хранение по товарам и сопоставимых данных о выручке. |
+| Отрицательная чистая маржа товара | Чистая маржа ниже 0 ₽ | Приостановлено: поставщики не предоставляют все данные, необходимые для расчёта чистой маржи. |
+
+Первое правило проверяется раз в минуту и срабатывает, если порог маржи нарушается в течение пяти минут. Для низкой маржи, изменения комиссии, сравнения цен и расходов на хранение используется важность `warning`; отрицательная чистая маржа помечается как `critical`. В редакторе запросов и настройках provisioning доступен `queryType: alert`: он возвращает только известные числовые значения в виде временных рядов с метками маркетплейса и товара. Для отсутствующих или неподдерживаемых значений возвращается пустой ряд (`NoData` в Grafana), а не ноль. В частности, запросы истории комиссии, цены конкурента и доли расходов на хранение к выручке не вернут ряды, пока не появятся необходимые исходные данные и расчёты.
+
+Чтобы включить правило, сначала реализуйте и проверьте отсутствующий источник данных, запустите соответствующий запрос **Метрика оповещения** в Grafana и убедитесь, что он возвращает ожидаемые метки товаров и числовые значения за нужный период. Затем измените `isPaused` на `false` только у этого правила в файле provisioning и перезапустите Grafana. Оставьте `noDataState: NoData` и `execErrState: Error`: не считайте ни одно из этих состояний нулём или нормальным значением. Контактные точки Telegram маршрутизируют уведомления по метке `severity`.
+
+В редакторе запросов выбираются маркетплейс, тип запроса, фильтры категорий, временной диапазон дашборда Grafana и ограничение числа записей. Запросы метрик товаров обращаются к выбранному поставщику и возвращают цены, комиссии или показатели рентабельности; ограничение применяется к числу записей результата. Текущий поставщик Ozon не предоставляет данные о комиссии — вместо вымышленных значений запрос комиссий отмечает их отсутствие. Список категорий пока не связан с поддерживаемыми фильтрами типизированных поставщиков: выбор категории приводит к понятной ошибке, а не игнорируется. История Ozon использует выбранный в Grafana период для дневной аналитики. Для получения истории цен Wildberries API требует ID товара и загрузки, которых нет в модели запроса, поэтому ограничение явно указывается.
+
+Редактор также поддерживает прямые запросы к API продавца: выберите маршрут, метод HTTP, относительный путь API и при необходимости тело запроса в JSON. Путь должен начинаться с `/` и добавляется к адресу API выбранного маркетплейса. Успешный ответ отображается в таблице вместе с маршрутом, кодом HTTP и исходным JSON. Выбирайте пути и параметры по официальной документации:
+
+- [API продавца Wildberries](https://dev.wildberries.ru/)
+- [API продавца Ozon](https://docs.ozon.ru/api/seller/)
+
+### Режимы запросов и структура результатов
+
+В прямом режиме доступны только `GET` и `POST`. Путь должен быть относительным, начинаться с одной `/` и не содержать переходов к родительскому каталогу; размер тела запроса ограничен 1 МиБ, ответа — 5 МиБ. Ответ API не преобразуется в набор отдельных колонок: он возвращается как JSON-текст.
+
+| Режим | Результат |
+| --- | --- |
+| `profitability` (по умолчанию) | Четыре таблицы: `product-metrics` — поля `marketplace`, `productId`, `marketplaceProductId`, `sellerSku`, `normalizedSellerSku`, `name`, `variantId`, `variantName`, `currentPrice`, `commission`, `commissionRatePercent`, `logisticsCost`, `storageCost`, `costPrice`, `netMargin`, `netMarginPercent`, `updatedAt`; `merged-products` — `sellerSku` и `offers` (массив предложений в JSON); `marketplace-status` — `marketplace`, `state`, `productCount`, `error`; `merge-warnings` — `sellerSku`, `marketplace`, `productIds` (JSON-массив), `reason`. |
+| `prices` | `marketplace`, `productId`, `marketplaceProductId`, `sellerSku`, `variantId`, `variantName`, `currentPrice`, `updatedAt`, а также таблица состояния поставщиков. |
+| `commissions` | `marketplace`, `productId`, `sellerSku`, `commission`, `commissionRatePercent`, а также таблица состояния поставщиков. Расходы на логистику и хранение не являются результатом этого режима. |
+| `history` | Для Ozon — `day`, `revenue`, `orderedUnits` и таблица состояния. Для Wildberries запрос пока недоступен: для истории нужны ID товара и загрузки. |
+| `alert` | Временные ряды `time` и `value` с метками `marketplace` и `product_id`; при наличии добавляются `seller_sku` и `variant_id`. Этот режим не заменяет таблицы состояния остальных режимов. |
+| Прямой запрос к API | Одна строка с полями `marketplace` (идентификатор маршрута), `status` (код HTTP) и `response` (JSON-ответ как текст). |
+
+Денежные значения нормализованных метрик выражаются в рублях, процентные значения — в процентах от 0 до 100. Недоступные значения остаются пустыми (`null`), а не становятся нулями. В текущих поставщиках нет исходных данных для `netMargin` и `netMarginPercent`; из пяти метрик оповещений числовой результат может появиться только у `netMarginRUB` и `netMarginPercent`, если эти значения начнёт предоставлять источник. Рост комиссии, цены конкурентов и доли хранения к выручке сейчас не рассчитываются и возвращают пустой ряд.
+
+### Сообщения о состоянии запроса
+
+Компонент `QueryStateMessage` (`src/components/QueryStateMessage.tsx`) отображает на русском языке распространённые состояния настройки запроса, ошибок API и пустого результата. Он использует компонент `Alert` из Grafana, преобразует коды HTTP 401 и 429 с помощью `queryStateFromHttpStatus` и показывает кнопку повтора только для ограничения частоты запросов и только при наличии `onRetry`. Если свойство `type` не указано, компонент ничего не отображает.
+
+Пример использования в редакторе запроса или компоненте состояния результата:
+
+```tsx
+import {
+  QueryStateMessage,
+  QueryStateMessageType,
+  queryStateFromHttpStatus,
+} from './QueryStateMessage';
+
+// Перед отправкой запроса:
+{!hasApiKey && <QueryStateMessage type={QueryStateMessageType.ApiKeyNotConfigured} />}
+{categories.length === 0 && <QueryStateMessage type={QueryStateMessageType.NoCategoriesSelected} />}
+
+// При обработке HTTP-ответа:
+const state = queryStateFromHttpStatus(response.status);
+return (
+  <QueryStateMessage
+    type={state}
+    onRetry={state === QueryStateMessageType.TooManyRequests ? onRunQuery : undefined}
+  />
+);
+
+// Если успешный запрос не вернул строк:
+{rows.length === 0 && <QueryStateMessage type={QueryStateMessageType.NoData} />}
+```
+
+Для типовых состояний используются фиксированные безопасные сообщения: ненастроенный API-ключ и отсутствие категорий показываются как предупреждения, HTTP 429 — как предупреждение с возможностью повтора, HTTP 401 — как ошибка, отсутствие данных за период — как информационное сообщение. Свойства `message` и `title` позволяют заменить текст; передавайте только локализованный и очищенный от чувствительных данных текст. Не передавайте исходные ошибки backend или API, тела ответов, заголовки запросов и значения учётных данных.
+
+Маршрут `wb-tariffs` обращается к общему API Wildberries (`common-api.wildberries.ru`), а `wb-prices` — к API цен и скидок (`discounts-prices-api.wildberries.ru`). Портал разработчика Wildberries содержит документацию, а не API-хост. Маршрут `ozon` обращается к `api-seller.ozon.ru`.
+
+В `plugin.json` также объявлены маршруты прокси Grafana с теми же идентификаторами. Сейчас Go-backend отправляет запросы напрямую на фиксированные API-хосты с настроенными учётными данными. Маршруты прокси предназначены для возможных будущих запросов из браузера или через прокси плагина и не меняют текущий способ работы backend.
+
+## Go-клиент API Wildberries
+
+Пакет `pkg/wildberries` содержит типизированный клиент API продавца:
 
 ```go
 client := wildberries.NewClient(apiKey)
@@ -38,30 +122,165 @@ commissions, err := client.GetCommissions(ctx, "ru")
 products, err := client.GetProducts(ctx, 1000, 0)
 ```
 
-It uses a 30-second HTTP timeout, sends the API key in the `Authorization` header, logs only request method/path/status/duration, and retries server (5xx) errors with context-aware exponential backoff. The client includes `GetUploadTask` and `GetUploadTaskDetails` for processed price uploads, following the [commission](https://dev.wildberries.ru/openapi/rates#tag/fees/operation/getV1TariffsCommission), [current product prices](https://dev.wildberries.ru/openapi/item-management#tag/pricesAndDiscounts/operation/getV2ListGoodsFilter), and [processed upload history](https://dev.wildberries.ru/openapi/item-management#tag/pricesAndDiscounts/operation/getV2HistoryTasks) operations.
+Клиент использует тайм-аут HTTP в 30 секунд, передаёт API-ключ в заголовке `Authorization`, журналирует только метод и путь запроса, код ответа, длительность и тип попадания или промаха кэша. Ошибки сервера (5xx) повторяются с экспоненциальной задержкой, учитывающей отмену контекста. Потокобезопасный внутрипроцессный кэш хранит комиссии 1 час, историю загрузок и цен 5 минут, товары 30 минут. Ключи кэша разделены по типу данных, идентификатору магазина, нормализованным параметрам запроса и одностороннему отпечатку API-ключа. Ошибки API в кэш не попадают.
 
-`GetPriceHistory(ctx, nmID, dateFrom, dateTo)` currently returns `ErrUploadTaskEnumerationUnsupported`. Wildberries' processed-history endpoints (`GET /api/v2/history/tasks` and `GET /api/v2/history/goods/task`) both require an `uploadID`, and the API does not expose an operation to enumerate those IDs. `GetPriceHistoryForUploads` can retrieve and filter price points when the caller already has the upload IDs. Those points represent changes submitted through the Wildberries API only; changes made manually in the seller cabinet are not available through these endpoints and are not included.
+`NewClient(apiKey)` создаёт клиент с отдельным кэшем и областью данных магазина по умолчанию. Используйте `NewClientWithCache(apiKey, shopID, cache)`, если нужен постоянный ID магазина и кэш, жизненным циклом которого управляет вызывающий код. Для обновления данных вызовите `client.InvalidateCache()`, а для замены учётных данных — `client.SetAPIKey(newKey)`: метод также удаляет записи кэша этого магазина. `client.CacheMetrics()` возвращает общую статистику и показатели попаданий и промахов отдельно по типам данных. Клиент с кэшем по умолчанию закрывайте через `client.Close()`; переданный в `NewClientWithCache` кэш принадлежит вызывающему коду и должен закрываться его владельцем. Кэш работает только в одном процессе и не синхронизируется между экземплярами backend Grafana. Универсальный редактор запросов Grafana отправляет произвольные запросы напрямую и не использует кэш типизированного клиента.
 
-Grafana data is stored in the `grafana-data` named volume. To stop Grafana:
+В клиенте есть методы `GetUploadTask` и `GetUploadTaskDetails` для обработки загрузок цен. Они используют операции API [комиссий](https://dev.wildberries.ru/openapi/rates#tag/fees/operation/getV1TariffsCommission), [текущих цен товаров](https://dev.wildberries.ru/openapi/item-management#tag/pricesAndDiscounts/operation/getV2ListGoodsFilter) и [истории обработанных загрузок](https://dev.wildberries.ru/openapi/item-management#tag/pricesAndDiscounts/operation/getV2HistoryTasks).
+
+Сейчас `GetPriceHistory(ctx, nmID, dateFrom, dateTo)` возвращает `ErrUploadTaskEnumerationUnsupported`. Операции Wildberries для истории обработанных загрузок (`GET /api/v2/history/tasks` и `GET /api/v2/history/goods/task`) требуют `uploadID`, но API не позволяет получить список таких ID. `GetPriceHistoryForUploads` может получить и отфильтровать изменения цен, если вызывающий код уже располагает ID загрузок. Эти операции показывают только изменения, отправленные через API Wildberries; ручные изменения в кабинете продавца недоступны и в историю не входят.
+
+## Go-клиент API продавца Ozon
+
+Пакет `pkg/ozon` содержит типизированный клиент для получения списка товаров, текущих цен и аналитики:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/pumba3000lvl/marketplace-profit-monitor/pkg/ozon"
+)
+
+func main() {
+    ctx := context.Background()
+    client := ozon.NewClient(os.Getenv("OZON_CLIENT_ID"), os.Getenv("OZON_API_KEY"))
+
+    products, err := client.GetProductList(ctx, 1000, "")
+    if err != nil {
+        log.Fatal(err)
+    }
+    productIDs := make([]string, 0, len(products))
+    for _, product := range products {
+        productIDs = append(productIDs, product.ProductID)
+    }
+    prices, err := client.GetPrices(ctx, productIDs)
+    if err != nil {
+        log.Fatal(err)
+    }
+    analytics, err := client.GetAnalytics(ctx, "2026-01-01", "2026-01-31", []string{"revenue", "ordered_units"})
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Товаров: %d, цен: %d, строк аналитики: %d\n", len(products), len(prices), len(analytics))
+}
+```
+
+Каждый запрос отправляется методом `POST` с телом JSON и заголовками `Client-Id` и `Api-Key`; тайм-аут — 30 секунд. Клиент журналирует метод HTTP, путь, код ответа, длительность и ID запроса Ozon, не записывая учётные данные или тело запроса. `APIError` содержит код HTTP, код и сообщение ошибки Ozon, а также ID запроса.
+
+Методы используют `POST /v3/product/list`, `POST /v5/product/info/prices` и `POST /v1/analytics/data`. `GetProductList` проходит по всем страницам с помощью курсора `last_id`, начиная с переданного курсора, и возвращает собранный список товаров. `GetPrices` удаляет повторяющиеся ID товаров, разбивает запрос на пакеты допустимого для API размера и проходит по страницам цен. Суммы цен хранятся в `PriceItem` как десятичные строки, чтобы сохранить точность значений Ozon. `GetAnalytics` получает все страницы и группирует данные по дням: это измерение API использует по умолчанию, поскольку сигнатура метода принимает показатели, но не измерения.
+
+Допустимые названия показателей аналитики и ограничения API описаны в [документации API продавца Ozon](https://docs.ozon.ru/api/seller/).
+
+## Единые метрики маркетплейсов
+
+Пакет `pkg/marketplace` объединяет типизированные клиенты Wildberries и Ozon в одну структуру `ProductMetrics`. В каждой строке сохраняется ID товара, заданный маркетплейсом (`nmID` у Wildberries, `offer_id` у Ozon); внутренний числовой `product_id` Ozon также хранится в `MarketplaceProductID` для сопоставления с ответами о ценах. Строки содержат артикул продавца (SKU), при наличии — вариант товара, цену в рублях, доступные значения комиссии и время получения данных. `Collect` сообщает состояние каждого маркетплейса отдельно и сохраняет строки, полученные от поставщика до последующей ошибки того же поставщика. `Merge` группирует строки только по артикулу продавца после обрезки пробелов и сравнения без учёта регистра; названия товаров и ID разных маркетплейсов для сопоставления не используются. Предложения разных маркетплейсов остаются отдельными, цены и расходы не перезаписываются.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/pumba3000lvl/marketplace-profit-monitor/pkg/marketplace"
+    "github.com/pumba3000lvl/marketplace-profit-monitor/pkg/ozon"
+    "github.com/pumba3000lvl/marketplace-profit-monitor/pkg/wildberries"
+)
+
+func main() {
+    ctx := context.Background()
+    wbClient := wildberries.NewClient(os.Getenv("WILDBERRIES_TOKEN"))
+    defer wbClient.Close()
+    ozonClient := ozon.NewClient(os.Getenv("OZON_CLIENT_ID"), os.Getenv("OZON_API_KEY"))
+
+    result, err := marketplace.Collect(ctx,
+        marketplace.NewWildberriesProvider(wbClient),
+        marketplace.NewOzonProvider(ozonClient),
+    )
+    if err != nil { // При отмене сбора частичные результаты остаются в result.
+        fmt.Printf("Сбор данных остановлен: %v\n", err)
+    }
+    for _, status := range result.Providers {
+        fmt.Printf("Маркетплейс %s: состояние %s (товаров: %d): %s\n",
+            status.Marketplace, status.State, status.ProductCount, status.Error)
+    }
+    for _, group := range result.Groups {
+        fmt.Printf("Артикул продавца %q: предложений маркетплейсов — %d\n", group.SellerSKU, len(group.Offers))
+    }
+}
+```
+
+Отсутствующие суммы представлены как `nil`, а не как ноль. Текущие клиенты предоставляют ставку комиссии Wildberries по категории и цену, а также цену Ozon в виде десятичной строки. Они не возвращают название товара, себестоимость или расходы на логистику и хранение по каждому товару. Поэтому названия и недоступные расходы остаются пустыми или равными `nil`, а чистая маржа не подменяется вымышленными значениями. Сумма комиссии Wildberries рассчитывается, только если категорию товара можно сопоставить с отчётом комиссий; комиссия и расходы на исполнение заказа Ozon недоступны. Чистая маржа рассчитывается как `текущая цена − комиссия − логистика − хранение − себестоимость`. Чтобы вычислить её, сначала задайте все пять значений в рублях, затем вызовите `marketplace.CalculateNetMargin`. Функция проверяет полноту данных и использует копейки для денежных вычислений. Цены не в рублях считаются недоступными.
+
+Предупреждения о сопоставлении отмечают предложения без артикула продавца (они сохраняются отдельными группами) и несколько разных ID товаров с одинаковым артикулом на одном маркетплейсе (сохраняются все товары). Размеры Wildberries являются отдельными предложениями с одним `nmID` и разными ID вариантов; они не считаются дубликатами товаров.
+
+Для этого набора данных в редакторе запросов Grafana выберите **Все маркетплейсы — метрики товаров**. Запрос возвращает плоскую таблицу метрик товаров, сгруппированную таблицу с массивом предложений по каждому SKU в формате JSON, состояние каждого маркетплейса и предупреждения о сопоставлении; существующие запросы к маршрутам API остаются без изменений. Настройте учётные данные для маркетплейсов, которые хотите включить. Если ключ не задан или маркетплейс недоступен, это отражается в таблице состояния, а данные другого поставщика сохраняются.
+
+### Расчёт чистой маржи
+
+`CalculateNetMargin` принимает денежные суммы в целых копейках и возвращает чистую маржу, её процент для отображения и готовую для дашборда разбивку расходов. Передавайте комиссию в базисных пунктах (`100` = 1%, `10_000` = 100%). Необязательные расходы на рекламу по умолчанию равны нулю; при нулевой себестоимости себестоимость товара не вычитается. Комиссия округляется до ближайшей копейки, половина копейки — вверх. Процент маржи вычисляется по итоговым целым суммам как `float64` только для отображения.
+
+```go
+result, err := wildberries.CalculateNetMargin(wildberries.MarginInput{
+    SalePriceKopecks:      10_000, // 100 ₽
+    CommissionBasisPoints: 1_500,  // 15%
+    LogisticsCostKopecks:  500,
+    StorageCostKopecks:    100,
+    CostPriceKopecks:      3_000,
+    AdCostKopecks:         200,
+})
+if err != nil {
+    return err
+}
+fmt.Printf("Чистая маржа: %d коп. (%.2f%%), расходы: %d коп.\n",
+    result.NetMarginKopecks, result.NetMarginPercent, result.TotalExpensesKopecks)
+```
+
+Данные Grafana хранятся в именованном томе `grafana-data`. Чтобы остановить Grafana:
 
 ```sh
 docker compose down
 ```
 
-To also remove the persisted Grafana data, run `docker compose down -v`.
+Чтобы также удалить сохранённые данные Grafana, выполните `docker compose down -v`.
 
-## Optional Redis
+## Устранение неполадок
 
-Start the optional Redis service with:
+- **Compose не находит файл конфигурации.** Запустите команду из корня клона, где лежит `docker-compose.yml`. Из другого каталога укажите путь к нему явно: `docker compose -f /путь/к/клону/docker-compose.yml up -d`.
+- **Плагин не загружается.** Сначала выполните `make build`, проверьте наличие frontend-файлов и исполняемого файла в `dist/`, затем перезапустите Grafana. Проверьте журнал командой `docker compose logs --tail=200 grafana`. В локальном Compose разрешена загрузка этого неподписанного плагина; не включайте аналогичную настройку на общедоступном или рабочем экземпляре без отдельной оценки риска.
+- **Источник данных не проходит проверку или запросы завершаются ошибкой.** Сохраните источник после изменения учётных данных. Для Ozon нужны одновременно Client-Id и API-ключ; Client-Id должен содержать только цифры. HTTP 401/403 указывает на учётные данные или права доступа, HTTP 429 — на ограничение частоты запросов. Для истории Ozon проверьте корректность периода дашборда.
+- **Не приходят оповещения Telegram.** Убедитесь, что заданы все три переменные окружения и бот может отправлять сообщения в оба чата, затем пересоздайте контейнер Grafana командой из раздела настройки Telegram. Правила маркетплейсов по умолчанию приостановлены и не отправят уведомления, пока не появятся и не будут проверены необходимые метрики.
+- **Ошибка TLS `x509: certificate signed by unknown authority`.** Backend проверяет сертификаты HTTPS и использует хранилище доверенных корневых сертификатов окружения Grafana. Проверьте системное время и сетевой прокси. Если в сети используется корпоративный TLS-прокси, запросите у администратора доверенный корневой сертификат и установите его в хранилище сертификатов контейнера Grafana либо подключите доверенный PEM bundle и задайте для контейнера `SSL_CERT_FILE`. После этого перезапустите Grafana. Не отключайте проверку сертификатов, не используйте `InsecureSkipVerify` и не заменяйте HTTPS на HTTP.
+
+При передаче журналов на диагностику проверьте их и удалите внутренние адреса и другие чувствительные сведения. Не публикуйте API-ключи, токены, URL Bot API с токеном или содержимое локального `.env`. Если токен Telegram ранее попал в сообщение, журнал или коммит, отзовите его через @BotFather и настройте новый; простая замена значения в `.env` не отзывает старый токен.
+
+## Необязательный Redis
+
+Запустите необязательный сервис Redis командой:
 
 ```sh
 docker compose --profile cache up -d
 ```
 
-Redis uses the `redis-data` named volume. The plugin does not connect to Redis yet; enabling this profile only starts Redis for local development.
+Данные Redis хранятся в именованном томе `redis-data`. Плагин пока не подключается к Redis; этот профиль только запускает Redis для локальной разработки.
 
-## Development
+## Разработка
 
-After changing frontend code, run `npm run build` and restart Grafana if you change `plugin.json`. The build preserves the backend binary. After changing Go code, run `make backend` and restart Grafana. To run the Go tests, use `make test`.
+Для локальной проверки frontend выполните:
 
-`make clean` removes generated `dist/` artifacts. Do not expose this unsigned-plugin development Grafana instance to an untrusted network.
+```sh
+npm ci
+npm run typecheck
+npm run lint
+npm run build
+```
+
+После изменения `plugin.json` или frontend-кода перезапустите Grafana, чтобы она загрузила собранный плагин. После изменения Go-кода выполните `make backend` и перезапустите Grafana. Go-тесты запускаются командой `make test`; дополнительная статическая проверка — `go vet ./pkg/...`. Если Go не установлен, `make backend` и `make test` используют Docker.
+
+Команда `make clean` удаляет собранные файлы из `dist/`. Для вклада в проект создайте отдельную рабочую ветку от актуальной целевой ветки, приложите к pull request описание изменений и результаты релевантных проверок. Не включайте в коммиты секреты, локальный `.env` или собранные артефакты. Не предоставляйте доступ к экземпляру Grafana для разработки с неподписанным плагином из недоверенной сети.

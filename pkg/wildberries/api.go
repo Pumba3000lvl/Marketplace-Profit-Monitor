@@ -22,14 +22,16 @@ func (c *Client) GetCommissions(ctx context.Context, locale string) ([]Commissio
 	if locale != "" {
 		query.Set("locale", locale)
 	}
-	var response commissionsResponse
-	if err := c.getJSON(ctx, c.commonBaseURL, "/api/v1/tariffs/commission", query, &response); err != nil {
-		return nil, err
-	}
-	if response.Report == nil {
-		return []CommissionItem{}, nil
-	}
-	return response.Report, nil
+	return cachedValue(ctx, c, "commissions", query, CommissionsTTL, func() ([]CommissionItem, error) {
+		var response commissionsResponse
+		if err := c.getJSON(ctx, c.commonBaseURL, "/api/v1/tariffs/commission", query, &response); err != nil {
+			return nil, err
+		}
+		if response.Report == nil {
+			return []CommissionItem{}, nil
+		}
+		return response.Report, nil
+	})
 }
 
 // GetProducts returns a page of the seller's current products and prices.
@@ -45,17 +47,19 @@ func (c *Client) GetProducts(ctx context.Context, limit, offset int) ([]Product,
 	query := make(url.Values)
 	query.Set("limit", strconv.Itoa(limit))
 	query.Set("offset", strconv.Itoa(offset))
-	var response productsResponse
-	if err := c.getJSON(ctx, c.pricesBaseURL, "/api/v2/list/goods/filter", query, &response); err != nil {
-		return nil, err
-	}
-	if err := checkAPIEnvelope(apiResponseError{Error: response.Error, ErrorText: response.ErrorText}); err != nil {
-		return nil, err
-	}
-	if response.Data.ListGoods == nil {
-		return []Product{}, nil
-	}
-	return response.Data.ListGoods, nil
+	return cachedValue(ctx, c, "products", query, ProductsTTL, func() ([]Product, error) {
+		var response productsResponse
+		if err := c.getJSON(ctx, c.pricesBaseURL, "/api/v2/list/goods/filter", query, &response); err != nil {
+			return nil, err
+		}
+		if err := checkAPIEnvelope(apiResponseError{Error: response.Error, ErrorText: response.ErrorText}); err != nil {
+			return nil, err
+		}
+		if response.Data.ListGoods == nil {
+			return []Product{}, nil
+		}
+		return response.Data.ListGoods, nil
+	})
 }
 
 // GetUploadTask retrieves the status and timing metadata for a processed upload.
@@ -66,20 +70,22 @@ func (c *Client) GetUploadTask(ctx context.Context, uploadID int64) (UploadTask,
 	}
 	query := make(url.Values)
 	query.Set("uploadID", strconv.FormatInt(uploadID, 10))
-	var response uploadTaskResponse
-	if err := c.getJSON(ctx, c.pricesBaseURL, "/api/v2/history/tasks", query, &response); err != nil {
-		return UploadTask{}, err
-	}
-	if err := checkAPIEnvelope(apiResponseError{Error: response.Error, ErrorText: response.ErrorText}); err != nil {
-		return UploadTask{}, err
-	}
-	if response.Data == nil {
-		return UploadTask{}, errors.New("Wildberries API returned no upload task data")
-	}
-	if response.Data.UploadID != 0 && response.Data.UploadID != uploadID {
-		return UploadTask{}, fmt.Errorf("Wildberries API returned uploadID %d for requested uploadID %d", response.Data.UploadID, uploadID)
-	}
-	return *response.Data, nil
+	return cachedValue(ctx, c, "prices", query, PricesTTL, func() (UploadTask, error) {
+		var response uploadTaskResponse
+		if err := c.getJSON(ctx, c.pricesBaseURL, "/api/v2/history/tasks", query, &response); err != nil {
+			return UploadTask{}, err
+		}
+		if err := checkAPIEnvelope(apiResponseError{Error: response.Error, ErrorText: response.ErrorText}); err != nil {
+			return UploadTask{}, err
+		}
+		if response.Data == nil {
+			return UploadTask{}, errors.New("Wildberries API returned no upload task data")
+		}
+		if response.Data.UploadID != 0 && response.Data.UploadID != uploadID {
+			return UploadTask{}, fmt.Errorf("Wildberries API returned uploadID %d for requested uploadID %d", response.Data.UploadID, uploadID)
+		}
+		return *response.Data, nil
+	})
 }
 
 // GetUploadTaskDetails retrieves all product/size entries for a processed upload.
@@ -91,35 +97,40 @@ func (c *Client) GetUploadTaskDetails(ctx context.Context, uploadID int64) ([]Up
 		return nil, fmt.Errorf("history page size must be between 1 and %d", maxPageSize)
 	}
 
-	var products []UploadTaskProduct
-	for offset := 0; ; offset += c.pageSize {
-		query := make(url.Values)
-		query.Set("uploadID", strconv.FormatInt(uploadID, 10))
-		query.Set("limit", strconv.Itoa(c.pageSize))
-		query.Set("offset", strconv.Itoa(offset))
-		var response uploadTaskDetailsResponse
-		if err := c.getJSON(ctx, c.pricesBaseURL, "/api/v2/history/goods/task", query, &response); err != nil {
-			return nil, err
+	cacheQuery := make(url.Values)
+	cacheQuery.Set("uploadID", strconv.FormatInt(uploadID, 10))
+	cacheQuery.Set("limit", strconv.Itoa(c.pageSize))
+	return cachedValue(ctx, c, "prices", cacheQuery, PricesTTL, func() ([]UploadTaskProduct, error) {
+		var products []UploadTaskProduct
+		for offset := 0; ; offset += c.pageSize {
+			query := make(url.Values)
+			query.Set("uploadID", strconv.FormatInt(uploadID, 10))
+			query.Set("limit", strconv.Itoa(c.pageSize))
+			query.Set("offset", strconv.Itoa(offset))
+			var response uploadTaskDetailsResponse
+			if err := c.getJSON(ctx, c.pricesBaseURL, "/api/v2/history/goods/task", query, &response); err != nil {
+				return nil, err
+			}
+			if err := checkAPIEnvelope(apiResponseError{Error: response.Error, ErrorText: response.ErrorText}); err != nil {
+				return nil, err
+			}
+			if response.Data == nil {
+				break
+			}
+			if response.Data.UploadID != nil && *response.Data.UploadID != uploadID {
+				return nil, fmt.Errorf("Wildberries API returned uploadID %d for requested uploadID %d", *response.Data.UploadID, uploadID)
+			}
+			page := response.Data.HistoryGoods
+			products = append(products, page...)
+			if len(page) < c.pageSize {
+				break
+			}
 		}
-		if err := checkAPIEnvelope(apiResponseError{Error: response.Error, ErrorText: response.ErrorText}); err != nil {
-			return nil, err
+		if products == nil {
+			return []UploadTaskProduct{}, nil
 		}
-		if response.Data == nil {
-			break
-		}
-		if response.Data.UploadID != nil && *response.Data.UploadID != uploadID {
-			return nil, fmt.Errorf("Wildberries API returned uploadID %d for requested uploadID %d", *response.Data.UploadID, uploadID)
-		}
-		page := response.Data.HistoryGoods
-		products = append(products, page...)
-		if len(page) < c.pageSize {
-			break
-		}
-	}
-	if products == nil {
-		return []UploadTaskProduct{}, nil
-	}
-	return products, nil
+		return products, nil
+	})
 }
 
 // GetPriceHistory returns processed API-upload price points in the inclusive
@@ -150,43 +161,55 @@ func (c *Client) GetPriceHistoryForUploads(ctx context.Context, nmID int64, date
 		return []PricePoint{}, nil
 	}
 
+	uniqueUploadIDs := make([]int64, 0, len(uploadIDs))
 	seen := make(map[int64]struct{}, len(uploadIDs))
-	var points []PricePoint
 	for _, uploadID := range uploadIDs {
-		if _, exists := seen[uploadID]; exists {
-			continue
+		if _, exists := seen[uploadID]; !exists {
+			seen[uploadID] = struct{}{}
+			uniqueUploadIDs = append(uniqueUploadIDs, uploadID)
 		}
-		seen[uploadID] = struct{}{}
-
-		task, err := c.GetUploadTask(ctx, uploadID)
-		if err != nil {
-			return nil, fmt.Errorf("get upload task %d: %w", uploadID, err)
-		}
-		if task.Status != 3 && task.Status != 5 {
-			continue
-		}
-		if task.ActivationDate == nil || task.ActivationDate.Before(dateFrom) || task.ActivationDate.After(dateTo) {
-			continue
-		}
-		products, err := c.GetUploadTaskDetails(ctx, uploadID)
-		if err != nil {
-			return nil, fmt.Errorf("get upload task %d details: %w", uploadID, err)
-		}
-		points = append(points, pricePointsForTask(nmID, uploadID, *task.ActivationDate, products)...)
 	}
-	sort.Slice(points, func(i, j int) bool {
-		if points[i].Timestamp.Equal(points[j].Timestamp) {
-			if points[i].UploadID == points[j].UploadID {
-				return sizeID(points[i].SizeID) < sizeID(points[j].SizeID)
+	sort.Slice(uniqueUploadIDs, func(i, j int) bool { return uniqueUploadIDs[i] < uniqueUploadIDs[j] })
+	cacheQuery := make(url.Values)
+	cacheQuery.Set("nmID", strconv.FormatInt(nmID, 10))
+	cacheQuery.Set("dateFrom", dateFrom.Format(time.RFC3339Nano))
+	cacheQuery.Set("dateTo", dateTo.Format(time.RFC3339Nano))
+	for _, uploadID := range uniqueUploadIDs {
+		cacheQuery.Add("uploadID", strconv.FormatInt(uploadID, 10))
+	}
+	return cachedValue(ctx, c, "prices", cacheQuery, PricesTTL, func() ([]PricePoint, error) {
+		var points []PricePoint
+		for _, uploadID := range uniqueUploadIDs {
+			task, err := c.GetUploadTask(ctx, uploadID)
+			if err != nil {
+				return nil, fmt.Errorf("get upload task %d: %w", uploadID, err)
 			}
-			return points[i].UploadID < points[j].UploadID
+			if task.Status != 3 && task.Status != 5 {
+				continue
+			}
+			if task.ActivationDate == nil || task.ActivationDate.Before(dateFrom) || task.ActivationDate.After(dateTo) {
+				continue
+			}
+			products, err := c.GetUploadTaskDetails(ctx, uploadID)
+			if err != nil {
+				return nil, fmt.Errorf("get upload task %d details: %w", uploadID, err)
+			}
+			points = append(points, pricePointsForTask(nmID, uploadID, *task.ActivationDate, products)...)
 		}
-		return points[i].Timestamp.Before(points[j].Timestamp)
+		sort.Slice(points, func(i, j int) bool {
+			if points[i].Timestamp.Equal(points[j].Timestamp) {
+				if points[i].UploadID == points[j].UploadID {
+					return sizeID(points[i].SizeID) < sizeID(points[j].SizeID)
+				}
+				return points[i].UploadID < points[j].UploadID
+			}
+			return points[i].Timestamp.Before(points[j].Timestamp)
+		})
+		if points == nil {
+			return []PricePoint{}, nil
+		}
+		return points, nil
 	})
-	if points == nil {
-		return []PricePoint{}, nil
-	}
-	return points, nil
 }
 
 func validateHistoryRange(nmID int64, dateFrom, dateTo time.Time) error {
