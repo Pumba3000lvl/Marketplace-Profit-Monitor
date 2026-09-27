@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/pumba3000lvl/marketplace-profit-monitor/pkg/marketplace"
 	"github.com/pumba3000lvl/marketplace-profit-monitor/pkg/ozon"
 	"github.com/pumba3000lvl/marketplace-profit-monitor/pkg/wildberries"
@@ -179,7 +180,7 @@ func TestMetricsQueryUsesSelectedProviderAndAppliesLimit(t *testing.T) {
 	}
 }
 
-func TestMetricsQueryBothProvidersPreservesPartialDataAndMapsErrors(t *testing.T) {
+func TestMetricsQueryBothProvidersPreservesDataAndAddsFailureNotices(t *testing.T) {
 	price := 10.0
 	datasource := &Datasource{
 		credentials: credentials{wildberriesToken: "wb-key", ozonClientID: "123", ozonAPIKey: "ozon-key"},
@@ -200,12 +201,133 @@ func TestMetricsQueryBothProvidersPreservesPartialDataAndMapsErrors(t *testing.T
 		t.Fatalf("QueryData() error = %v", err)
 	}
 	result := response.Responses["A"]
-	if result.Status != backend.StatusInternal || result.Error == nil || len(result.Frames) != 2 {
-		t.Fatalf("partial response = %+v, want internal status, error, and preserved frames", result)
+	if result.Status != backend.StatusOK || result.Error != nil || len(result.Frames) != 2 {
+		t.Fatalf("partial response = %+v, want successful status with preserved frames", result)
 	}
 	if result.Frames[0].Rows() != 1 || result.Frames[0].Fields[0].At(0) != "wb" ||
-		result.Frames[1].Rows() != 2 || result.Frames[1].Fields[1].At(1) != "unavailable" {
+		result.Frames[1].Rows() != 2 || !strings.Contains(result.Frames[1].Fields[1].At(1).(string), "unavailable") {
 		t.Fatalf("partial result lost provider data/status: %+v", result.Frames)
+	}
+	assertWarningOnEveryFrame(t, result.Frames, "Ozon data is unavailable.")
+}
+
+func TestMetricsQueryBothProvidersUnavailableReturnsUsefulError(t *testing.T) {
+	datasource := &Datasource{
+		credentials: credentials{wildberriesToken: "wb-key", ozonClientID: "123", ozonAPIKey: "ozon-key"},
+		wildberriesProviderFactory: func() (marketplace.Provider, func() error, error) {
+			return testProvider{marketplace: marketplace.Wildberries, err: errors.New("WB network unavailable")}, nil, nil
+		},
+		ozonProviderFactory: func() (marketplace.Provider, func() error, error) {
+			return testProvider{marketplace: marketplace.Ozon, err: errors.New("Ozon network unavailable")}, nil, nil
+		},
+	}
+	response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
+		RefID: "A",
+		JSON:  json.RawMessage(`{"marketplace":"metrics","selectedMarketplace":"both","queryType":"prices"}`),
+	}}})
+	if err != nil {
+		t.Fatalf("QueryData() error = %v", err)
+	}
+	result := response.Responses["A"]
+	if result.Status != backend.StatusInternal || result.Error == nil || len(result.Frames) != 0 {
+		t.Fatalf("unavailable response = %+v, want useful internal error without empty data frames", result)
+	}
+	if !strings.Contains(result.Error.Error(), "No marketplace data is available") ||
+		strings.Contains(result.Error.Error(), "network unavailable") {
+		t.Fatalf("unavailable error = %q, want clear sanitized message", result.Error)
+	}
+}
+
+func TestMetricsQueryPreservesOzonPartialRowsAndWarns(t *testing.T) {
+	price := 10.0
+	datasource := &Datasource{
+		credentials: credentials{ozonClientID: "123", ozonAPIKey: "ozon-key"},
+		ozonProviderFactory: func() (marketplace.Provider, func() error, error) {
+			return testProvider{
+				marketplace: marketplace.Ozon,
+				products: []marketplace.ProductMetrics{{
+					Marketplace:  marketplace.Ozon,
+					ProductID:    "ozon-1",
+					CurrentPrice: &price,
+				}},
+				err: errors.New("price API failed after product rows loaded"),
+			}, nil, nil
+		},
+	}
+	response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
+		RefID: "O",
+		JSON:  json.RawMessage(`{"marketplace":"metrics","selectedMarketplace":"ozon","queryType":"prices"}`),
+	}}})
+	if err != nil {
+		t.Fatalf("QueryData() error = %v", err)
+	}
+	result := response.Responses["O"]
+	if result.Error != nil || result.Status != backend.StatusOK || len(result.Frames) != 2 {
+		t.Fatalf("partial Ozon result = %+v, want successful response with frames", result)
+	}
+	if result.Frames[0].Rows() != 1 || result.Frames[0].Fields[1].At(0) != "ozon-1" ||
+		result.Frames[0].Fields[6].At(0) != &price ||
+		result.Frames[1].Fields[1].At(0) != "partial" {
+		t.Fatalf("partial Ozon row/status was not retained: %+v", result.Frames)
+	}
+	assertWarningOnEveryFrame(t, result.Frames, "Ozon returned partial data; some values may be missing.")
+}
+
+func TestMetricsQueryExpiredCredentialProvidesSettingsHint(t *testing.T) {
+	const secret = "expired-private-token"
+	datasource := &Datasource{
+		credentials: credentials{wildberriesToken: secret},
+		wildberriesProviderFactory: func() (marketplace.Provider, func() error, error) {
+			return testProvider{
+				marketplace: marketplace.Wildberries,
+				err: fmt.Errorf("API rejected token %s: %w", secret, &wildberries.APIError{
+					StatusCode: http.StatusUnauthorized,
+					Message:    "raw provider response containing a secret",
+				}),
+			}, nil, nil
+		},
+	}
+	response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
+		RefID: "A",
+		JSON:  json.RawMessage(`{"marketplace":"metrics","selectedMarketplace":"wildberries","queryType":"prices"}`),
+	}}})
+	if err != nil {
+		t.Fatalf("QueryData() error = %v", err)
+	}
+	result := response.Responses["A"]
+	if result.Status != backend.StatusUnauthorized || result.Error == nil ||
+		!strings.Contains(result.Error.Error(), "credentials are invalid or expired") ||
+		!strings.Contains(result.Error.Error(), "Update them in datasource settings") {
+		t.Fatalf("expired credential response = %+v, want unauthorized status and settings hint", result)
+	}
+	if strings.Contains(result.Error.Error(), secret) || strings.Contains(result.Error.Error(), "raw provider response") {
+		t.Fatalf("expired credential response leaked provider detail: %v", result.Error)
+	}
+}
+
+func TestQueryDataFailureForOneTargetDoesNotAffectLaterTarget(t *testing.T) {
+	datasource := &Datasource{
+		credentials: credentials{wildberriesToken: "wb-key", ozonClientID: "123", ozonAPIKey: "ozon-key"},
+		ozonProviderFactory: func() (marketplace.Provider, func() error, error) {
+			return testProvider{marketplace: marketplace.Ozon, err: errors.New("provider unavailable")}, nil, nil
+		},
+		wildberriesProviderFactory: func() (marketplace.Provider, func() error, error) {
+			return testProvider{marketplace: marketplace.Wildberries}, nil, nil
+		},
+	}
+	response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{
+		{RefID: "A", JSON: json.RawMessage(`{"marketplace":"metrics","selectedMarketplace":"ozon","queryType":"prices"}`)},
+		{RefID: "B", JSON: json.RawMessage(`{"marketplace":"metrics","selectedMarketplace":"wildberries","queryType":"prices"}`)},
+	}})
+	if err != nil {
+		t.Fatalf("QueryData() error = %v", err)
+	}
+	if response.Responses["A"].Error == nil || response.Responses["A"].Status != backend.StatusInternal {
+		t.Fatalf("failed target response = %+v, want isolated error", response.Responses["A"])
+	}
+	if response.Responses["B"].Error != nil || response.Responses["B"].Status != backend.StatusOK ||
+		len(response.Responses["B"].Frames) != 2 {
+		t.Fatalf("later successful target response = %+v, want success unaffected by A", response.Responses["B"])
 	}
 }
 
@@ -231,7 +353,7 @@ func TestMetricsQueryMapsRateLimitAndRedactsCredentials(t *testing.T) {
 	if result.Status != backend.StatusTooManyRequests || result.Error == nil {
 		t.Fatalf("rate-limit response = %+v, want status 429 and error", result)
 	}
-	if strings.Contains(result.Error.Error(), secret) || strings.Contains(fmt.Sprint(result.Frames[2].Fields[3].At(0)), secret) {
+	if strings.Contains(result.Error.Error(), secret) || strings.Contains(fmt.Sprint(result.Frames), secret) {
 		t.Fatalf("response exposed credential %q: %+v", secret, result)
 	}
 }
@@ -251,10 +373,11 @@ func TestOzonCommissionQueryReportsUnavailableCommissionData(t *testing.T) {
 		t.Fatalf("QueryData() error = %v", err)
 	}
 	result := response.Responses["A"]
-	if result.Status != backend.StatusInternal || result.Error == nil ||
+	if result.Status != backend.StatusOK || result.Error != nil ||
 		result.Frames[1].Fields[3].At(0) != "Ozon commission data is not available from the current provider" {
-		t.Fatalf("Ozon commission response = %+v, want explicit unavailable-data status", result)
+		t.Fatalf("Ozon commission response = %+v, want successful response with explicit warning", result)
 	}
+	assertWarningOnEveryFrame(t, result.Frames, "Ozon commission data is not available from the current provider")
 }
 
 func TestOzonHistoryUsesGrafanaTimeRange(t *testing.T) {
@@ -266,6 +389,7 @@ func TestOzonHistoryUsesGrafanaTimeRange(t *testing.T) {
 		credentials:          credentials{ozonClientID: "123", ozonAPIKey: "api-key"},
 		ozonAnalyticsFactory: func() ozonAnalyticsAPI { return analytics },
 	}
+
 	from := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, time.September, 7, 23, 59, 0, 0, time.UTC)
 	response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
@@ -318,6 +442,7 @@ func TestMetricsDataResponsePreservesProductMetricsAndNullableValues(t *testing.
 		Commission:           &commission,
 		UpdatedAt:            updatedAt,
 	}
+
 	response := metricsDataResponse(
 		backend.DataQuery{RefID: "A"},
 		marketplace.CollectionResult{
@@ -366,5 +491,24 @@ func TestMetricsDataResponsePreservesProductMetricsAndNullableValues(t *testing.
 	}
 	if response.Frames[1].Rows() != 1 || response.Frames[3].Rows() != 1 {
 		t.Errorf("merged/warning frame rows = %d/%d, want 1/1", response.Frames[1].Rows(), response.Frames[3].Rows())
+	}
+}
+
+func assertWarningOnEveryFrame(t *testing.T, frames data.Frames, text string) {
+	t.Helper()
+	for _, frame := range frames {
+		if frame.Meta == nil || len(frame.Meta.Notices) == 0 {
+			t.Errorf("frame %q has no metadata notice", frame.Name)
+			continue
+		}
+		found := false
+		for _, notice := range frame.Meta.Notices {
+			if notice.Severity == data.NoticeSeverityWarning && notice.Text == text {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("frame %q notices = %+v, want warning %q", frame.Name, frame.Meta.Notices, text)
+		}
 	}
 }

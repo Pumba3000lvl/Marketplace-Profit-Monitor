@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +26,11 @@ import (
 const maxResponseBytes = 5 << 20
 const maxRequestBytes = 1 << 20
 const maxQueryLimit = 100_000
+
+var (
+	httpStatusPattern = regexp.MustCompile(`HTTP ([0-9]{3})`)
+	requestIDPattern  = regexp.MustCompile(`(?i)request[_ ]id[=: ]+["']?([A-Za-z0-9._-]{1,128})`)
+)
 
 type providerFactory func() (marketplace.Provider, func() error, error)
 
@@ -104,10 +112,26 @@ func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSetting
 
 func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
 	response := backend.NewQueryDataResponse()
+	if req == nil {
+		return response, nil
+	}
 	for _, query := range req.Queries {
-		response.Responses[query.RefID] = d.query(ctx, query)
+		response.Responses[query.RefID] = d.querySafely(ctx, query)
 	}
 	return response, nil
+}
+
+func (d *Datasource) querySafely(ctx context.Context, query backend.DataQuery) (response backend.DataResponse) {
+	var model queryModel
+	_ = json.Unmarshal(query.JSON, &model)
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("marketplace query panic refID=%q marketplace=%q query_type=%q error=unexpected query failure",
+				d.sanitizeString(query.RefID), safeQueryMarketplace(model.Marketplace), safeQueryType(model.QueryType))
+			response = backend.ErrDataResponse(backend.StatusInternal, "marketplace query failed unexpectedly")
+		}
+	}()
+	return d.query(ctx, query)
 }
 
 func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend.DataResponse {
@@ -263,6 +287,9 @@ func (d *Datasource) queryRaw(ctx context.Context, query backend.DataQuery, mode
 		return backend.ErrDataResponse(backend.StatusInternal, "marketplace request failed")
 	}
 	defer upstreamResponse.Body.Close()
+	if upstreamResponse.StatusCode == http.StatusUnauthorized {
+		return backend.ErrDataResponse(backend.StatusUnauthorized, "Marketplace credentials are invalid or expired. Update them in datasource settings.")
+	}
 	if upstreamResponse.StatusCode == http.StatusTooManyRequests {
 		return backend.ErrDataResponse(backend.StatusTooManyRequests, "marketplace API rate limit exceeded")
 	}
@@ -369,34 +396,35 @@ func (d *Datasource) queryMetrics(ctx context.Context, query backend.DataQuery, 
 		if missingConfiguration {
 			status = backend.StatusBadRequest
 		}
-		return backend.ErrDataResponse(status, d.sanitizeError(err).Error())
+		return backend.ErrDataResponse(status, failureResponseMessage(result.Providers))
 	}
 
+	failureMessage := failureResponseMessage(result.Providers)
+	d.logProviderFailures(query, model.QueryType, result.Providers)
 	for i := range result.Providers {
-		result.Providers[i].Error = d.sanitizeString(result.Providers[i].Error)
+		result.Providers[i].Error = safeProviderMessage(result.Providers[i].Marketplace, result.Providers[i].State, result.Providers[i].Error)
 	}
-	var queryErrors []error
 	if model.QueryType == "commissions" {
 		for index := range result.Providers {
 			status := &result.Providers[index]
 			if status.Marketplace == marketplace.Ozon && status.Error == "" {
 				status.State = marketplace.ProviderPartial
 				status.Error = "Ozon commission data is not available from the current provider"
-				queryErrors = append(queryErrors, errors.New(status.Error))
 			}
 		}
 	}
+	if !providerDataAvailable(result.Providers) {
+		status := marketplaceErrorStatus(err)
+		if missingConfiguration && collectErr == nil && len(releaseErrors) == 0 {
+			status = backend.StatusBadRequest
+		}
+		return backend.ErrDataResponse(status, failureMessage)
+	}
+
 	result.Products = d.sanitizeProducts(limitedProducts(result.Products, model.Limit))
 	result.Groups, result.Warnings = marketplace.Merge(result.Products)
 	response := metricsQueryDataResponse(query, model.QueryType, result)
-	err = errors.Join(err, errors.Join(queryErrors...))
-	if err != nil {
-		response.Error = d.sanitizeError(err)
-		response.Status = marketplaceErrorStatus(err)
-		if missingConfiguration && collectErr == nil && len(releaseErrors) == 0 {
-			response.Status = backend.StatusBadRequest
-		}
-	}
+	attachProviderNotices(&response, result.Providers)
 	return response
 }
 
@@ -585,14 +613,20 @@ func (d *Datasource) queryHistory(ctx context.Context, query backend.DataQuery, 
 			rows[rowIndex].Dimensions[dimensionIndex].Name = d.sanitizeString(rows[rowIndex].Dimensions[dimensionIndex].Name)
 		}
 	}
-	response := historyDataResponse(query, limitedAnalytics(rows, model.Limit), statuses)
-	if err := errors.Join(queryErrors...); err != nil {
-		response.Error = d.sanitizeError(err)
-		response.Status = marketplaceErrorStatus(err)
-		if missingConfiguration && len(queryErrors) == 1 {
-			response.Status = backend.StatusBadRequest
-		}
+	failureMessage := failureResponseMessage(statuses)
+	d.logProviderFailures(query, model.QueryType, statuses)
+	for index := range statuses {
+		statuses[index].Error = safeProviderMessage(statuses[index].Marketplace, statuses[index].State, statuses[index].Error)
 	}
+	if !providerDataAvailable(statuses) {
+		status := marketplaceErrorStatus(errors.Join(queryErrors...))
+		if missingConfiguration && len(queryErrors) == 1 {
+			status = backend.StatusBadRequest
+		}
+		return backend.ErrDataResponse(status, failureMessage)
+	}
+	response := historyDataResponse(query, limitedAnalytics(rows, model.Limit), statuses)
+	attachProviderNotices(&response, statuses)
 	return response
 }
 
@@ -637,10 +671,16 @@ func historyDataResponse(query backend.DataQuery, rows []ozon.AnalyticsRow, stat
 
 func marketplaceErrorStatus(err error) backend.Status {
 	var wildberriesErr *wildberries.APIError
+	if errors.As(err, &wildberriesErr) && wildberriesErr.StatusCode == http.StatusUnauthorized {
+		return backend.StatusUnauthorized
+	}
 	if errors.As(err, &wildberriesErr) && wildberriesErr.StatusCode == http.StatusTooManyRequests {
 		return backend.StatusTooManyRequests
 	}
 	var ozonErr *ozon.APIError
+	if errors.As(err, &ozonErr) && ozonErr.StatusCode == http.StatusUnauthorized {
+		return backend.StatusUnauthorized
+	}
 	if errors.As(err, &ozonErr) && ozonErr.StatusCode == http.StatusTooManyRequests {
 		return backend.StatusTooManyRequests
 	}
@@ -648,6 +688,154 @@ func marketplaceErrorStatus(err error) backend.Status {
 		return backend.StatusTimeout
 	}
 	return backend.StatusInternal
+}
+
+func providerDataAvailable(statuses []marketplace.ProviderStatus) bool {
+	for _, status := range statuses {
+		switch status.State {
+		case marketplace.ProviderAvailable, marketplace.ProviderNoData:
+			return true
+		case marketplace.ProviderPartial:
+			if status.ProductCount > 0 ||
+				status.Error == "Ozon commission data is not available from the current provider" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func attachProviderNotices(response *backend.DataResponse, statuses []marketplace.ProviderStatus) {
+	var notices []data.Notice
+	for _, status := range statuses {
+		if status.State != marketplace.ProviderPartial &&
+			status.State != marketplace.ProviderUnavailable &&
+			status.State != marketplace.ProviderCancelled {
+			continue
+		}
+		text := safeProviderMessage(status.Marketplace, status.State, status.Error)
+		if text == "" {
+			continue
+		}
+		notices = append(notices, data.Notice{Severity: data.NoticeSeverityWarning, Text: text})
+	}
+	if len(notices) == 0 {
+		return
+	}
+	for _, frame := range response.Frames {
+		if frame.Meta == nil {
+			frame.Meta = &data.FrameMeta{}
+		}
+		frame.Meta.Notices = append(frame.Meta.Notices, notices...)
+	}
+}
+
+func safeProviderMessage(name marketplace.Marketplace, state marketplace.ProviderState, raw string) string {
+	label := "Marketplace"
+	if name == marketplace.Wildberries {
+		label = "Wildberries"
+	} else if name == marketplace.Ozon {
+		label = "Ozon"
+	}
+	if status := parsedHTTPStatus(raw); status == http.StatusUnauthorized {
+		return label + " credentials are invalid or expired. Update them in datasource settings."
+	}
+	if status := parsedHTTPStatus(raw); status == http.StatusTooManyRequests {
+		return label + " API rate limit exceeded."
+	}
+	if raw == "Ozon commission data is not available from the current provider" {
+		return raw
+	}
+	if strings.Contains(raw, "price history requires product and upload IDs") {
+		return "Wildberries price history requires product and upload IDs, which are not available in this query."
+	}
+	if strings.Contains(strings.ToLower(raw), "configure ") ||
+		strings.Contains(strings.ToLower(raw), "not configured") {
+		return label + " is not configured. Update datasource settings."
+	}
+	switch state {
+	case marketplace.ProviderPartial:
+		return label + " returned partial data; some values may be missing."
+	case marketplace.ProviderUnavailable:
+		return label + " data is unavailable."
+	case marketplace.ProviderCancelled:
+		return label + " request was cancelled."
+	default:
+		return ""
+	}
+}
+
+func failureResponseMessage(statuses []marketplace.ProviderStatus) string {
+	messages := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		message := safeProviderMessage(status.Marketplace, status.State, status.Error)
+		if message != "" {
+			messages = append(messages, message)
+		}
+	}
+	if len(messages) == 0 {
+		return "No marketplace data is available."
+	}
+	return "No marketplace data is available. " + strings.Join(messages, " ")
+}
+
+func parsedHTTPStatus(raw string) int {
+	match := httpStatusPattern.FindStringSubmatch(raw)
+	if len(match) != 2 {
+		return 0
+	}
+	status, _ := strconv.Atoi(match[1])
+	return status
+}
+
+func (d *Datasource) logProviderFailures(query backend.DataQuery, queryType string, statuses []marketplace.ProviderStatus) {
+	for _, status := range statuses {
+		if status.State != marketplace.ProviderPartial &&
+			status.State != marketplace.ProviderUnavailable &&
+			status.State != marketplace.ProviderCancelled {
+			continue
+		}
+		httpStatus := parsedHTTPStatus(status.Error)
+		requestID := ""
+		if match := requestIDPattern.FindStringSubmatch(status.Error); len(match) == 2 {
+			requestID = strings.Map(func(char rune) rune {
+				if char < 32 || char == 127 {
+					return -1
+				}
+				return char
+			}, match[1])
+		}
+		requestID = d.sanitizeString(requestID)
+		category := "provider request failed"
+		switch httpStatus {
+		case http.StatusUnauthorized:
+			category = "credentials rejected"
+		case http.StatusTooManyRequests:
+			category = "rate limited"
+		default:
+			if httpStatus != 0 {
+				category = "upstream API error"
+			}
+		}
+		log.Printf("marketplace query failed refID=%q marketplace=%q query_type=%q status=%d request_id=%q error=%q",
+			d.sanitizeString(query.RefID), status.Marketplace, safeQueryType(queryType), httpStatus, requestID, category)
+	}
+}
+
+func safeQueryMarketplace(value string) string {
+	switch value {
+	case "metrics", "wildberries", "wb-tariffs", "wb-prices", "ozon":
+		return value
+	default:
+		return "unknown"
+	}
+}
+
+func safeQueryType(value string) string {
+	if isSupportedQueryType(value) {
+		return value
+	}
+	return "unknown"
 }
 
 func (d *Datasource) sanitizeError(err error) error {
