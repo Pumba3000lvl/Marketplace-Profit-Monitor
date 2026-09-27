@@ -1,0 +1,40 @@
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: Telegram Critical
+    receivers:
+      - uid: telegram-critical
+        type: telegram
+        settings:
+          bottoken: $TELEGRAM_BOT_TOKEN
+          chatid: $TELEGRAM_CRITICAL_CHAT_ID
+          message: |
+            {{ template "default.message" . }}
+        disableResolveMessage: false
+  - orgId: 1
+    name: Telegram Warning
+    receivers:
+      - uid: telegram-warning
+        type: telegram
+        settings:
+          bottoken: $TELEGRAM_BOT_TOKEN
+          chatid: $TELEGRAM_WARNING_CHAT_ID
+          message: |
+            {{ template "default.message" . }}
+        disableResolveMessage: false
+
+policies:
+  - orgId: 1
+    receiver: Telegram Warning
+    group_by:
+      - alertname
+      - marketplace
+      - product_id
+    routes:
+      - receiver: Telegram Critical
+        object_matchers:
+          - [severity, '=', critical]
+      - receiver: Telegram Warning
+        object_matchers:
+          - [severity, '=', warning]
