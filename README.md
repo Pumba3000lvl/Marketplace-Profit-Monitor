@@ -26,6 +26,38 @@ The query editor exposes marketplace and query-type selectors, marketplace-scope
 - [Wildberries seller API](https://dev.wildberries.ru/)
 - [Ozon Seller API](https://docs.ozon.ru/api/seller/)
 
+### Localized query-state messages
+
+`QueryStateMessage` (`src/components/QueryStateMessage.tsx`) provides Russian-language alerts for common query setup, API, and empty-result states. It uses Grafana's `Alert` component, maps HTTP 401 and 429 responses with `queryStateFromHttpStatus`, and shows a retry button only for rate-limit states when `onRetry` is supplied. It renders nothing when `type` is omitted.
+
+Use it in a query editor or a result-state component:
+
+```tsx
+import {
+  QueryStateMessage,
+  QueryStateMessageType,
+  queryStateFromHttpStatus,
+} from './QueryStateMessage';
+
+// Before sending a request:
+{!hasApiKey && <QueryStateMessage type={QueryStateMessageType.ApiKeyNotConfigured} />}
+{categories.length === 0 && <QueryStateMessage type={QueryStateMessageType.NoCategoriesSelected} />}
+
+// When handling an HTTP response:
+const state = queryStateFromHttpStatus(response.status);
+return (
+  <QueryStateMessage
+    type={state}
+    onRetry={state === QueryStateMessageType.TooManyRequests ? onRunQuery : undefined}
+  />
+);
+
+// For a successful request with no rows:
+{rows.length === 0 && <QueryStateMessage type={QueryStateMessageType.NoData} />}
+```
+
+The standard states display fixed, safe messages: missing API-key configuration and missing categories are warnings, HTTP 429 is a retryable warning, HTTP 401 is an error, and an empty period is informational. `message` and `title` may override the displayed copy; only pass localized, sanitized text. Do not pass raw backend/API errors, response bodies, request headers, or credential values.
+
 The `wb-tariffs` route targets Wildberries' common API (`common-api.wildberries.ru`), while `wb-prices` targets its prices and discounts API (`discounts-prices-api.wildberries.ru`). The Wildberries developer portal is documentation, not an API host. The `ozon` route targets `api-seller.ozon.ru`.
 
 The plugin's `plugin.json` also declares Grafana data-source proxy routes with these same IDs. The current Go backend sends queries directly to the fixed API hosts using the configured credentials; the proxy routes are available for future browser-side/plugin proxy calls and do not change that backend request path.
