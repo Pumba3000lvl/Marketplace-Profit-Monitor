@@ -22,6 +22,13 @@ import (
 
 const maxResponseBytes = 5 << 20
 const maxRequestBytes = 1 << 20
+const maxQueryLimit = 100_000
+
+type providerFactory func() (marketplace.Provider, func() error, error)
+
+type ozonAnalyticsAPI interface {
+	GetAnalytics(context.Context, string, string, []string) ([]ozon.AnalyticsRow, error)
+}
 
 type marketplaceRoute struct {
 	host string
@@ -52,9 +59,12 @@ type datasourceJSONData struct {
 }
 
 type Datasource struct {
-	client      *http.Client
-	credentials credentials
-	jsonData    datasourceJSONData
+	client                     *http.Client
+	credentials                credentials
+	jsonData                   datasourceJSONData
+	wildberriesProviderFactory providerFactory
+	ozonProviderFactory        providerFactory
+	ozonAnalyticsFactory       func() ozonAnalyticsAPI
 }
 
 type queryModel struct {
@@ -95,32 +105,38 @@ func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSetting
 func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
 	response := backend.NewQueryDataResponse()
 	for _, query := range req.Queries {
-		if isMetricsQuery(query) {
-			response.Responses[query.RefID] = d.queryMetrics(ctx, query)
-		} else {
-			response.Responses[query.RefID] = d.query(ctx, query)
-		}
+		response.Responses[query.RefID] = d.query(ctx, query)
 	}
 	return response, nil
 }
 
-func isMetricsQuery(query backend.DataQuery) bool {
+func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend.DataResponse {
 	var model queryModel
-	return json.Unmarshal(query.JSON, &model) == nil && model.Marketplace == "metrics"
-}
-
-func (d *Datasource) queryMetrics(ctx context.Context, query backend.DataQuery) backend.DataResponse {
-	wildberriesClient := wildberries.NewClient(d.credentials.wildberriesToken)
-	result, err := marketplace.Collect(
-		ctx,
-		marketplace.NewWildberriesProvider(wildberriesClient),
-		marketplace.NewOzonProvider(ozon.NewClient(d.credentials.ozonClientID, d.credentials.ozonAPIKey)),
-	)
-	if closeErr := wildberriesClient.Close(); closeErr != nil {
-		err = errors.Join(err, fmt.Errorf("close Wildberries client: %w", closeErr))
+	if err := json.Unmarshal(query.JSON, &model); err != nil {
+		return backend.ErrDataResponse(backend.StatusBadRequest, "invalid query JSON")
+	}
+	if model.QueryType == "" {
+		model.QueryType = "profitability"
+	}
+	if !isSupportedQueryType(model.QueryType) {
+		return backend.ErrDataResponse(backend.StatusBadRequest, "unknown query type")
+	}
+	if model.Limit != nil && (*model.Limit < 1 || *model.Limit > maxQueryLimit) {
+		return backend.ErrDataResponse(backend.StatusBadRequest, "maximum records must be between 1 and 100000")
+	}
+	if len(model.Categories) > 0 {
+		return backend.ErrDataResponse(backend.StatusBadRequest, "category filters are not supported by the marketplace providers")
 	}
 
-	return metricsDataResponse(query, result, err)
+	if model.Marketplace == "metrics" {
+		switch model.QueryType {
+		case "history":
+			return d.queryHistory(ctx, query, model)
+		default:
+			return d.queryMetrics(ctx, query, model)
+		}
+	}
+	return d.queryRaw(ctx, query, model)
 }
 
 func metricsDataResponse(query backend.DataQuery, result marketplace.CollectionResult, err error) backend.DataResponse {
@@ -181,20 +197,7 @@ func metricsDataResponse(query backend.DataQuery, result marketplace.CollectionR
 	}
 	mergedFrame.RefID = query.RefID
 
-	statusFrame := data.NewFrame(
-		"marketplace-status",
-		data.NewField("marketplace", nil, make([]string, 0, len(result.Providers))),
-		data.NewField("state", nil, make([]string, 0, len(result.Providers))),
-		data.NewField("productCount", nil, make([]int64, 0, len(result.Providers))),
-		data.NewField("error", nil, make([]string, 0, len(result.Providers))),
-	)
-	for _, status := range result.Providers {
-		statusFrame.Fields[0].Append(string(status.Marketplace))
-		statusFrame.Fields[1].Append(string(status.State))
-		statusFrame.Fields[2].Append(int64(status.ProductCount))
-		statusFrame.Fields[3].Append(status.Error)
-	}
-	statusFrame.RefID = query.RefID
+	statusFrame := providerStatusFrame(query.RefID, result.Providers)
 
 	warningFrame := data.NewFrame(
 		"merge-warnings",
@@ -216,17 +219,12 @@ func metricsDataResponse(query backend.DataQuery, result marketplace.CollectionR
 	}
 	warningFrame.RefID = query.RefID
 
-	response := backend.DataResponse{Frames: data.Frames{productFrame, mergedFrame, statusFrame, warningFrame}}
+	response := backend.DataResponse{Frames: data.Frames{productFrame, mergedFrame, statusFrame, warningFrame}, Status: backend.StatusOK}
 	response.Error = err
 	return response
 }
 
-func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend.DataResponse {
-	var model queryModel
-	if err := json.Unmarshal(query.JSON, &model); err != nil {
-		return backend.ErrDataResponse(backend.StatusBadRequest, "invalid query JSON")
-	}
-
+func (d *Datasource) queryRaw(ctx context.Context, query backend.DataQuery, model queryModel) backend.DataResponse {
 	route, ok := marketplaceRoutes[model.Marketplace]
 	if !ok {
 		return backend.ErrDataResponse(backend.StatusBadRequest, "unknown marketplace route")
@@ -262,20 +260,23 @@ func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend
 
 	upstreamResponse, err := d.client.Do(request)
 	if err != nil {
-		return backend.ErrDataResponse(backend.StatusBadGateway, fmt.Sprintf("marketplace request failed: %v", err))
+		return backend.ErrDataResponse(backend.StatusInternal, "marketplace request failed")
 	}
 	defer upstreamResponse.Body.Close()
+	if upstreamResponse.StatusCode == http.StatusTooManyRequests {
+		return backend.ErrDataResponse(backend.StatusTooManyRequests, "marketplace API rate limit exceeded")
+	}
 
 	responseBody, err := io.ReadAll(io.LimitReader(upstreamResponse.Body, maxResponseBytes+1))
 	if err != nil {
-		return backend.ErrDataResponse(backend.StatusBadGateway, "could not read marketplace response")
+		return backend.ErrDataResponse(backend.StatusInternal, "could not read marketplace response")
 	}
 	if len(responseBody) > maxResponseBytes {
-		return backend.ErrDataResponse(backend.StatusBadGateway, "marketplace response exceeds 5 MiB")
+		return backend.ErrDataResponse(backend.StatusInternal, "marketplace response exceeds 5 MiB")
 	}
 	if upstreamResponse.StatusCode < http.StatusOK || upstreamResponse.StatusCode >= http.StatusMultipleChoices {
 		return backend.ErrDataResponse(
-			backend.StatusBadGateway,
+			backend.StatusInternal,
 			fmt.Sprintf("marketplace API returned HTTP %d", upstreamResponse.StatusCode),
 		)
 	}
@@ -284,10 +285,402 @@ func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend
 		"marketplace-response",
 		data.NewField("marketplace", nil, []string{model.Marketplace}),
 		data.NewField("status", nil, []int64{int64(upstreamResponse.StatusCode)}),
-		data.NewField("response", nil, []string{string(responseBody)}),
+		data.NewField("response", nil, []string{d.sanitizeString(string(responseBody))}),
 	)
 	frame.RefID = query.RefID
-	return backend.DataResponse{Frames: data.Frames{frame}}
+	return backend.DataResponse{Frames: data.Frames{frame}, Status: backend.StatusOK}
+}
+
+func (d *Datasource) queryMetrics(ctx context.Context, query backend.DataQuery, model queryModel) backend.DataResponse {
+	selected, err := selectedMarketplaces(model.SelectedMarketplace)
+	if err != nil {
+		return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
+	}
+
+	result := marketplace.CollectionResult{
+		Products:  []marketplace.ProductMetrics{},
+		Groups:    []marketplace.ProductGroup{},
+		Warnings:  []marketplace.MergeWarning{},
+		Providers: []marketplace.ProviderStatus{},
+	}
+	providers := make([]marketplace.Provider, 0, len(selected))
+	releases := make([]func() error, 0, len(selected))
+	var setupErrors []error
+	var setupStatuses []marketplace.ProviderStatus
+	missingConfiguration := false
+
+	for _, name := range selected {
+		credentialRoute := string(name)
+		if name == marketplace.Wildberries {
+			credentialRoute = "wildberries"
+		}
+		if err := d.validateCredentials(credentialRoute); err != nil {
+			missingConfiguration = true
+			setupErrors = append(setupErrors, fmt.Errorf("%s: %w", name, err))
+			setupStatuses = append(setupStatuses, marketplace.ProviderStatus{
+				Marketplace: name,
+				State:       marketplace.ProviderUnavailable,
+				Error:       err.Error(),
+			})
+			continue
+		}
+
+		provider, release, err := d.newProvider(name)
+		if err != nil {
+			setupErrors = append(setupErrors, fmt.Errorf("%s: initialize provider: %w", name, err))
+			setupStatuses = append(setupStatuses, marketplace.ProviderStatus{
+				Marketplace: name,
+				State:       marketplace.ProviderUnavailable,
+				Error:       "could not initialize marketplace provider",
+			})
+			continue
+		}
+		providers = append(providers, provider)
+		if release != nil {
+			releases = append(releases, release)
+		}
+	}
+
+	var collectErr error
+	if len(providers) > 0 {
+		result, collectErr = marketplace.CollectWithErrors(ctx, providers...)
+	}
+	result.Providers = append(result.Providers, setupStatuses...)
+	statusesByMarketplace := make(map[marketplace.Marketplace]marketplace.ProviderStatus, len(result.Providers))
+	for _, status := range result.Providers {
+		statusesByMarketplace[status.Marketplace] = status
+	}
+	result.Providers = result.Providers[:0]
+	for _, name := range selected {
+		if status, exists := statusesByMarketplace[name]; exists {
+			result.Providers = append(result.Providers, status)
+		}
+	}
+
+	var releaseErrors []error
+	for _, release := range releases {
+		if err := release(); err != nil {
+			releaseErrors = append(releaseErrors, fmt.Errorf("close marketplace provider: %w", err))
+		}
+	}
+	err = errors.Join(append(setupErrors, collectErr, errors.Join(releaseErrors...))...)
+	if len(providers) == 0 && err != nil {
+		status := backend.StatusInternal
+		if missingConfiguration {
+			status = backend.StatusBadRequest
+		}
+		return backend.ErrDataResponse(status, d.sanitizeError(err).Error())
+	}
+
+	for i := range result.Providers {
+		result.Providers[i].Error = d.sanitizeString(result.Providers[i].Error)
+	}
+	var queryErrors []error
+	if model.QueryType == "commissions" {
+		for index := range result.Providers {
+			status := &result.Providers[index]
+			if status.Marketplace == marketplace.Ozon && status.Error == "" {
+				status.State = marketplace.ProviderPartial
+				status.Error = "Ozon commission data is not available from the current provider"
+				queryErrors = append(queryErrors, errors.New(status.Error))
+			}
+		}
+	}
+	result.Products = d.sanitizeProducts(limitedProducts(result.Products, model.Limit))
+	result.Groups, result.Warnings = marketplace.Merge(result.Products)
+	response := metricsQueryDataResponse(query, model.QueryType, result)
+	err = errors.Join(err, errors.Join(queryErrors...))
+	if err != nil {
+		response.Error = d.sanitizeError(err)
+		response.Status = marketplaceErrorStatus(err)
+		if missingConfiguration && collectErr == nil && len(releaseErrors) == 0 {
+			response.Status = backend.StatusBadRequest
+		}
+	}
+	return response
+}
+
+func (d *Datasource) newProvider(name marketplace.Marketplace) (marketplace.Provider, func() error, error) {
+	switch name {
+	case marketplace.Wildberries:
+		if d.wildberriesProviderFactory != nil {
+			return d.wildberriesProviderFactory()
+		}
+		client := wildberries.NewClient(d.credentials.wildberriesToken)
+		return marketplace.NewWildberriesProvider(client), client.Close, nil
+	case marketplace.Ozon:
+		if d.ozonProviderFactory != nil {
+			return d.ozonProviderFactory()
+		}
+		return marketplace.NewOzonProvider(ozon.NewClient(d.credentials.ozonClientID, d.credentials.ozonAPIKey)), nil, nil
+	default:
+		return nil, nil, fmt.Errorf("unsupported marketplace %q", name)
+	}
+}
+
+func selectedMarketplaces(value string) ([]marketplace.Marketplace, error) {
+	switch value {
+	case "", "both":
+		return []marketplace.Marketplace{marketplace.Wildberries, marketplace.Ozon}, nil
+	case "wildberries":
+		return []marketplace.Marketplace{marketplace.Wildberries}, nil
+	case "ozon":
+		return []marketplace.Marketplace{marketplace.Ozon}, nil
+	default:
+		return nil, errors.New("unknown marketplace selection")
+	}
+}
+
+func isSupportedQueryType(value string) bool {
+	switch value {
+	case "commissions", "prices", "profitability", "history":
+		return true
+	default:
+		return false
+	}
+}
+
+func limitedProducts(products []marketplace.ProductMetrics, limit *int) []marketplace.ProductMetrics {
+	if limit != nil && len(products) > *limit {
+		products = products[:*limit]
+	}
+	return products
+}
+
+func metricsQueryDataResponse(query backend.DataQuery, queryType string, result marketplace.CollectionResult) backend.DataResponse {
+	if queryType == "profitability" {
+		return metricsDataResponse(query, result, nil)
+	}
+
+	frame := data.NewFrame("marketplace-"+queryType, data.NewField("marketplace", nil, make([]string, 0, len(result.Products))))
+	switch queryType {
+	case "prices":
+		frame.Fields = append(frame.Fields,
+			data.NewField("productId", nil, make([]string, 0, len(result.Products))),
+			data.NewField("marketplaceProductId", nil, make([]string, 0, len(result.Products))),
+			data.NewField("sellerSku", nil, make([]string, 0, len(result.Products))),
+			data.NewField("variantId", nil, make([]string, 0, len(result.Products))),
+			data.NewField("variantName", nil, make([]string, 0, len(result.Products))),
+			data.NewField("currentPrice", nil, make([]*float64, 0, len(result.Products))),
+			data.NewField("updatedAt", nil, make([]time.Time, 0, len(result.Products))),
+		)
+		for _, product := range result.Products {
+			frame.Fields[0].Append(string(product.Marketplace))
+			frame.Fields[1].Append(product.ProductID)
+			frame.Fields[2].Append(product.MarketplaceProductID)
+			frame.Fields[3].Append(product.SellerSKU)
+			frame.Fields[4].Append(product.VariantID)
+			frame.Fields[5].Append(product.VariantName)
+			frame.Fields[6].Append(product.CurrentPrice)
+			frame.Fields[7].Append(product.UpdatedAt)
+		}
+	case "commissions":
+		frame.Fields = append(frame.Fields,
+			data.NewField("productId", nil, make([]string, 0, len(result.Products))),
+			data.NewField("sellerSku", nil, make([]string, 0, len(result.Products))),
+			data.NewField("commission", nil, make([]*float64, 0, len(result.Products))),
+			data.NewField("commissionRatePercent", nil, make([]*float64, 0, len(result.Products))),
+		)
+		for _, product := range result.Products {
+			frame.Fields[0].Append(string(product.Marketplace))
+			frame.Fields[1].Append(product.ProductID)
+			frame.Fields[2].Append(product.SellerSKU)
+			frame.Fields[3].Append(product.Commission)
+			frame.Fields[4].Append(product.CommissionRatePercent)
+		}
+	}
+	frame.RefID = query.RefID
+	status := providerStatusFrame(query.RefID, result.Providers)
+	return backend.DataResponse{Frames: data.Frames{frame, status}, Status: backend.StatusOK}
+}
+
+func providerStatusFrame(refID string, statuses []marketplace.ProviderStatus) *data.Frame {
+	frame := data.NewFrame(
+		"marketplace-status",
+		data.NewField("marketplace", nil, make([]string, 0, len(statuses))),
+		data.NewField("state", nil, make([]string, 0, len(statuses))),
+		data.NewField("productCount", nil, make([]int64, 0, len(statuses))),
+		data.NewField("error", nil, make([]string, 0, len(statuses))),
+	)
+	for _, status := range statuses {
+		frame.Fields[0].Append(string(status.Marketplace))
+		frame.Fields[1].Append(string(status.State))
+		frame.Fields[2].Append(int64(status.ProductCount))
+		frame.Fields[3].Append(status.Error)
+	}
+	frame.RefID = refID
+	return frame
+}
+
+func (d *Datasource) queryHistory(ctx context.Context, query backend.DataQuery, model queryModel) backend.DataResponse {
+	selected, err := selectedMarketplaces(model.SelectedMarketplace)
+	if err != nil {
+		return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
+	}
+
+	var statuses []marketplace.ProviderStatus
+	var rows []ozon.AnalyticsRow
+	var queryErrors []error
+	missingConfiguration := false
+	for _, name := range selected {
+		if name == marketplace.Wildberries {
+			err := fmt.Errorf("%w: price history requires product and upload IDs, which are not available in this query", wildberries.ErrUploadTaskEnumerationUnsupported)
+			queryErrors = append(queryErrors, err)
+			statuses = append(statuses, marketplace.ProviderStatus{
+				Marketplace: name,
+				State:       marketplace.ProviderUnavailable,
+				Error:       err.Error(),
+			})
+			continue
+		}
+		if err := d.validateCredentials("ozon"); err != nil {
+			missingConfiguration = true
+			queryErrors = append(queryErrors, err)
+			statuses = append(statuses, marketplace.ProviderStatus{
+				Marketplace: name,
+				State:       marketplace.ProviderUnavailable,
+				Error:       err.Error(),
+			})
+			continue
+		}
+		if query.TimeRange.From.IsZero() || query.TimeRange.To.IsZero() || query.TimeRange.To.Before(query.TimeRange.From) {
+			return backend.ErrDataResponse(backend.StatusBadRequest, "history queries require a valid Grafana time range")
+		}
+
+		var client ozonAnalyticsAPI
+		if d.ozonAnalyticsFactory != nil {
+			client = d.ozonAnalyticsFactory()
+		} else {
+			client = ozon.NewClient(d.credentials.ozonClientID, d.credentials.ozonAPIKey)
+		}
+		analytics, analyticsErr := client.GetAnalytics(
+			ctx,
+			query.TimeRange.From.Format("2006-01-02"),
+			query.TimeRange.To.Format("2006-01-02"),
+			[]string{"revenue", "ordered_units"},
+		)
+		rows = append(rows, analytics...)
+		status := marketplace.ProviderStatus{
+			Marketplace:  marketplace.Ozon,
+			ProductCount: len(analytics),
+			State:        marketplace.ProviderAvailable,
+		}
+		if analyticsErr != nil {
+			queryErrors = append(queryErrors, analyticsErr)
+			status.Error = d.sanitizeError(analyticsErr).Error()
+			if len(analytics) > 0 {
+				status.State = marketplace.ProviderPartial
+			} else {
+				status.State = marketplace.ProviderUnavailable
+			}
+		} else if len(analytics) == 0 {
+			status.State = marketplace.ProviderNoData
+		}
+		statuses = append(statuses, status)
+	}
+
+	for rowIndex := range rows {
+		for dimensionIndex := range rows[rowIndex].Dimensions {
+			rows[rowIndex].Dimensions[dimensionIndex].ID = d.sanitizeString(rows[rowIndex].Dimensions[dimensionIndex].ID)
+			rows[rowIndex].Dimensions[dimensionIndex].Name = d.sanitizeString(rows[rowIndex].Dimensions[dimensionIndex].Name)
+		}
+	}
+	response := historyDataResponse(query, limitedAnalytics(rows, model.Limit), statuses)
+	if err := errors.Join(queryErrors...); err != nil {
+		response.Error = d.sanitizeError(err)
+		response.Status = marketplaceErrorStatus(err)
+		if missingConfiguration && len(queryErrors) == 1 {
+			response.Status = backend.StatusBadRequest
+		}
+	}
+	return response
+}
+
+func limitedAnalytics(rows []ozon.AnalyticsRow, limit *int) []ozon.AnalyticsRow {
+	if limit != nil && len(rows) > *limit {
+		rows = rows[:*limit]
+	}
+	return rows
+}
+
+func historyDataResponse(query backend.DataQuery, rows []ozon.AnalyticsRow, statuses []marketplace.ProviderStatus) backend.DataResponse {
+	frame := data.NewFrame(
+		"marketplace-history",
+		data.NewField("day", nil, make([]string, 0, len(rows))),
+		data.NewField("revenue", nil, make([]*float64, 0, len(rows))),
+		data.NewField("orderedUnits", nil, make([]*float64, 0, len(rows))),
+	)
+	for _, row := range rows {
+		day := ""
+		if len(row.Dimensions) > 0 {
+			day = row.Dimensions[0].ID
+			if day == "" {
+				day = row.Dimensions[0].Name
+			}
+		}
+		var revenue, orderedUnits *float64
+		if len(row.Metrics) > 0 {
+			value := row.Metrics[0]
+			revenue = &value
+		}
+		if len(row.Metrics) > 1 {
+			value := row.Metrics[1]
+			orderedUnits = &value
+		}
+		frame.Fields[0].Append(day)
+		frame.Fields[1].Append(revenue)
+		frame.Fields[2].Append(orderedUnits)
+	}
+	frame.RefID = query.RefID
+	return backend.DataResponse{Frames: data.Frames{frame, providerStatusFrame(query.RefID, statuses)}, Status: backend.StatusOK}
+}
+
+func marketplaceErrorStatus(err error) backend.Status {
+	var wildberriesErr *wildberries.APIError
+	if errors.As(err, &wildberriesErr) && wildberriesErr.StatusCode == http.StatusTooManyRequests {
+		return backend.StatusTooManyRequests
+	}
+	var ozonErr *ozon.APIError
+	if errors.As(err, &ozonErr) && ozonErr.StatusCode == http.StatusTooManyRequests {
+		return backend.StatusTooManyRequests
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return backend.StatusTimeout
+	}
+	return backend.StatusInternal
+}
+
+func (d *Datasource) sanitizeError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New(d.sanitizeString(err.Error()))
+}
+
+func (d *Datasource) sanitizeString(value string) string {
+	for _, secret := range []string{
+		d.credentials.wildberriesToken,
+		d.credentials.ozonClientID,
+		d.credentials.ozonAPIKey,
+		d.credentials.telegramBotToken,
+	} {
+		if secret != "" {
+			value = strings.ReplaceAll(value, secret, "[redacted]")
+		}
+	}
+	return value
+}
+
+func (d *Datasource) sanitizeProducts(products []marketplace.ProductMetrics) []marketplace.ProductMetrics {
+	for index := range products {
+		products[index].ProductID = d.sanitizeString(products[index].ProductID)
+		products[index].MarketplaceProductID = d.sanitizeString(products[index].MarketplaceProductID)
+		products[index].SellerSKU = d.sanitizeString(products[index].SellerSKU)
+		products[index].Name = d.sanitizeString(products[index].Name)
+		products[index].VariantID = d.sanitizeString(products[index].VariantID)
+		products[index].VariantName = d.sanitizeString(products[index].VariantName)
+	}
+	return products
 }
 
 func validateRequestPath(value string) (string, error) {

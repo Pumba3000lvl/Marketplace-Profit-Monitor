@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -169,6 +170,82 @@ func TestCallResourceRejectsUnknownAndUnconfiguredTargets(t *testing.T) {
 				t.Fatalf("CallResource() status = %d, want %d", response.status, testCase.want)
 			}
 		})
+	}
+}
+
+func TestQueryDataUsesDecryptedSettingsWithoutExposingCredentials(t *testing.T) {
+	const secret = "query-only-wb-secret"
+	instance, err := NewDatasource(context.Background(), backend.DataSourceInstanceSettings{
+		DecryptedSecureJSONData: map[string]string{"wildberriesToken": secret},
+	})
+	if err != nil {
+		t.Fatalf("NewDatasource() error = %v", err)
+	}
+	datasource := instance.(*Datasource)
+	datasource.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Header.Get("Authorization") != secret {
+			t.Errorf("authorization header = %q, want configured secure setting", request.Header.Get("Authorization"))
+		}
+		return jsonResponse(http.StatusOK, `{"token":"`+secret+`"}`), nil
+	})}
+
+	response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
+		RefID: "A",
+		JSON:  json.RawMessage(`{"marketplace":"wb-tariffs","path":"/api/v1/tariffs/box","method":"GET"}`),
+	}}})
+	if err != nil {
+		t.Fatalf("QueryData() error = %v", err)
+	}
+	result := response.Responses["A"]
+	if result.Error != nil || result.Status != backend.StatusOK {
+		t.Fatalf("QueryData() response = %+v, want successful response", result)
+	}
+	body := result.Frames[0].Fields[2].At(0).(string)
+	if strings.Contains(body, secret) || strings.Contains(fmt.Sprint(result), secret) {
+		t.Fatalf("query response exposed secure setting %q: %s", secret, body)
+	}
+	if !strings.Contains(body, "[redacted]") {
+		t.Fatalf("response body = %s, want matching credential redacted", body)
+	}
+}
+
+func TestQueryDataMapsRawRouteRateLimit(t *testing.T) {
+	datasource := &Datasource{
+		credentials: credentials{wildberriesToken: "configured"},
+		client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusTooManyRequests, `{"error":"retry later"}`), nil
+		})},
+	}
+	response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
+		RefID: "A",
+		JSON:  json.RawMessage(`{"marketplace":"wb-tariffs","path":"/api/v1/tariffs/box","method":"GET"}`),
+	}}})
+	if err != nil {
+		t.Fatalf("QueryData() error = %v", err)
+	}
+	if result := response.Responses["A"]; result.Status != backend.StatusTooManyRequests || result.Error == nil {
+		t.Fatalf("rate-limit response = %+v, want status 429 and error", result)
+	}
+}
+
+func TestQueryDataHonorsRequestCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	datasource := &Datasource{
+		credentials: credentials{wildberriesToken: "configured"},
+		client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return nil, request.Context().Err()
+		})},
+	}
+	response, err := datasource.QueryData(ctx, &backend.QueryDataRequest{Queries: []backend.DataQuery{{
+		RefID: "A",
+		JSON:  json.RawMessage(`{"marketplace":"wb-tariffs","path":"/api/v1/tariffs/box","method":"GET"}`),
+	}}})
+	if err != nil {
+		t.Fatalf("QueryData() error = %v", err)
+	}
+	if result := response.Responses["A"]; result.Status != backend.StatusInternal || result.Error == nil {
+		t.Fatalf("cancelled query response = %+v, want per-query internal error", result)
 	}
 }
 

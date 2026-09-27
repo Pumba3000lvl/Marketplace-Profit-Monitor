@@ -3,11 +3,17 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/pumba3000lvl/marketplace-profit-monitor/pkg/marketplace"
+	"github.com/pumba3000lvl/marketplace-profit-monitor/pkg/ozon"
+	"github.com/pumba3000lvl/marketplace-profit-monitor/pkg/wildberries"
 )
 
 func TestValidateRequestPath(t *testing.T) {
@@ -67,33 +73,236 @@ func TestQueryModelReadsEditorOptions(t *testing.T) {
 	}
 }
 
-func TestMetricsQueryReturnsProductStatusAndWarningFrames(t *testing.T) {
-	query := backend.DataQuery{
+type testProvider struct {
+	marketplace marketplace.Marketplace
+	products    []marketplace.ProductMetrics
+	err         error
+}
+
+func (p testProvider) Marketplace() marketplace.Marketplace { return p.marketplace }
+func (p testProvider) GetProductMetrics(context.Context) ([]marketplace.ProductMetrics, error) {
+	return p.products, p.err
+}
+
+type testOzonAnalytics struct {
+	rows    []ozon.AnalyticsRow
+	err     error
+	from    string
+	to      string
+	metrics []string
+}
+
+func (a *testOzonAnalytics) GetAnalytics(_ context.Context, from, to string, metrics []string) ([]ozon.AnalyticsRow, error) {
+	a.from, a.to, a.metrics = from, to, append([]string(nil), metrics...)
+	return a.rows, a.err
+}
+
+func TestQueryDataMapsMalformedAndUnknownQueriesPerRefID(t *testing.T) {
+	datasource := &Datasource{
+		credentials: credentials{wildberriesToken: "configured"},
+		wildberriesProviderFactory: func() (marketplace.Provider, func() error, error) {
+			return testProvider{marketplace: marketplace.Wildberries}, nil, nil
+		},
+	}
+	response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{
+		Queries: []backend.DataQuery{
+			{RefID: "A", JSON: json.RawMessage(`{invalid`)},
+			{RefID: "B", JSON: json.RawMessage(`{"marketplace":"metrics","queryType":"not-a-query"}`)},
+			{RefID: "C", JSON: json.RawMessage(`{"marketplace":"metrics","selectedMarketplace":"wildberries","queryType":"prices"}`)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("QueryData() error = %v", err)
+	}
+	if response.Responses["A"].Status != backend.StatusBadRequest || response.Responses["A"].Error == nil {
+		t.Errorf("malformed response = %+v, want bad request", response.Responses["A"])
+	}
+	if response.Responses["B"].Status != backend.StatusBadRequest || response.Responses["B"].Error == nil {
+		t.Errorf("unknown query type response = %+v, want bad request", response.Responses["B"])
+	}
+	if response.Responses["C"].Error != nil || response.Responses["C"].Status != backend.StatusOK {
+		t.Errorf("valid query after bad inputs = %+v, want success", response.Responses["C"])
+	}
+}
+
+func TestQueryDataRejectsUnsupportedFiltersAndInvalidLimits(t *testing.T) {
+	for name, rawQuery := range map[string]string{
+		"category filter":   `{"marketplace":"metrics","categories":["wb:electronics"]}`,
+		"zero limit":        `{"marketplace":"metrics","limit":0}`,
+		"excessive limit":   `{"marketplace":"metrics","limit":100001}`,
+		"unknown selection": `{"marketplace":"metrics","selectedMarketplace":"marketplace-x"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			response, err := (&Datasource{}).QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
+				RefID: "A",
+				JSON:  json.RawMessage(rawQuery),
+			}}})
+			if err != nil {
+				t.Fatalf("QueryData() error = %v", err)
+			}
+			if got := response.Responses["A"].Status; got != backend.StatusBadRequest {
+				t.Fatalf("QueryData() status = %v, want bad request", got)
+			}
+		})
+	}
+}
+
+func TestMetricsQueryUsesSelectedProviderAndAppliesLimit(t *testing.T) {
+	firstPrice, secondPrice := 12.5, 22.5
+	factoryCalls := 0
+	datasource := &Datasource{
+		credentials: credentials{wildberriesToken: "configured"},
+		wildberriesProviderFactory: func() (marketplace.Provider, func() error, error) {
+			factoryCalls++
+			return testProvider{
+				marketplace: marketplace.Wildberries,
+				products: []marketplace.ProductMetrics{
+					{Marketplace: marketplace.Wildberries, ProductID: "1", CurrentPrice: &firstPrice},
+					{Marketplace: marketplace.Wildberries, ProductID: "2", CurrentPrice: &secondPrice},
+				},
+			}, nil, nil
+		},
+	}
+	response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
 		RefID: "A",
-		JSON:  json.RawMessage(`{"marketplace":"metrics"}`),
+		JSON:  json.RawMessage(`{"marketplace":"metrics","selectedMarketplace":"wildberries","queryType":"prices","limit":1}`),
+	}}})
+	if err != nil {
+		t.Fatalf("QueryData() error = %v", err)
 	}
-	if !isMetricsQuery(query) {
-		t.Fatal("isMetricsQuery() = false for metrics mode")
+	result := response.Responses["A"]
+	if factoryCalls != 1 || result.Error != nil || result.Frames[0].Name != "marketplace-prices" || result.Frames[0].Rows() != 1 {
+		t.Fatalf("query result = calls:%d response:%+v; want one WB price row", factoryCalls, result)
 	}
-	response := (&Datasource{}).queryMetrics(context.Background(), query)
-	if response.Error != nil {
-		t.Fatalf("queryMetrics() error = %v", response.Error)
+	if result.Frames[0].Fields[1].At(0) != "1" || result.Frames[1].Fields[0].At(0) != "wb" {
+		t.Fatalf("query returned wrong product/provider: %v / %v", result.Frames[0].Fields[1].At(0), result.Frames[1].Fields[0].At(0))
 	}
-	if len(response.Frames) != 4 {
-		t.Fatalf("queryMetrics() returned %d frames, want 4", len(response.Frames))
+}
+
+func TestMetricsQueryBothProvidersPreservesPartialDataAndMapsErrors(t *testing.T) {
+	price := 10.0
+	datasource := &Datasource{
+		credentials: credentials{wildberriesToken: "wb-key", ozonClientID: "123", ozonAPIKey: "ozon-key"},
+		wildberriesProviderFactory: func() (marketplace.Provider, func() error, error) {
+			return testProvider{marketplace: marketplace.Wildberries, products: []marketplace.ProductMetrics{
+				{Marketplace: marketplace.Wildberries, ProductID: "wb-1", CurrentPrice: &price},
+			}}, nil, nil
+		},
+		ozonProviderFactory: func() (marketplace.Provider, func() error, error) {
+			return testProvider{marketplace: marketplace.Ozon, err: errors.New("provider unavailable")}, nil, nil
+		},
 	}
-	if response.Frames[0].Name != "product-metrics" || response.Frames[1].Name != "merged-products" ||
-		response.Frames[2].Name != "marketplace-status" || response.Frames[3].Name != "merge-warnings" {
-		t.Fatalf("query frame names = %q, %q, %q, %q", response.Frames[0].Name, response.Frames[1].Name, response.Frames[2].Name, response.Frames[3].Name)
+	response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
+		RefID: "A",
+		JSON:  json.RawMessage(`{"marketplace":"metrics","selectedMarketplace":"both","queryType":"prices"}`),
+	}}})
+	if err != nil {
+		t.Fatalf("QueryData() error = %v", err)
 	}
-	statusFrame := response.Frames[2]
-	if statusFrame.Rows() != 2 {
-		t.Fatalf("marketplace status rows = %d, want 2", statusFrame.Rows())
+	result := response.Responses["A"]
+	if result.Status != backend.StatusInternal || result.Error == nil || len(result.Frames) != 2 {
+		t.Fatalf("partial response = %+v, want internal status, error, and preserved frames", result)
 	}
-	for index := 0; index < statusFrame.Rows(); index++ {
-		if statusFrame.Fields[1].At(index) != "unavailable" || statusFrame.Fields[3].At(index) == "" {
-			t.Errorf("status row %d = (%v, %v), want unavailable with an error", index, statusFrame.Fields[1].At(index), statusFrame.Fields[3].At(index))
-		}
+	if result.Frames[0].Rows() != 1 || result.Frames[0].Fields[0].At(0) != "wb" ||
+		result.Frames[1].Rows() != 2 || result.Frames[1].Fields[1].At(1) != "unavailable" {
+		t.Fatalf("partial result lost provider data/status: %+v", result.Frames)
+	}
+}
+
+func TestMetricsQueryMapsRateLimitAndRedactsCredentials(t *testing.T) {
+	const secret = "private-wb-token"
+	datasource := &Datasource{
+		credentials: credentials{wildberriesToken: secret},
+		wildberriesProviderFactory: func() (marketplace.Provider, func() error, error) {
+			return testProvider{
+				marketplace: marketplace.Wildberries,
+				err:         fmt.Errorf("request failed with token %s: %w", secret, &wildberries.APIError{StatusCode: http.StatusTooManyRequests}),
+			}, nil, nil
+		},
+	}
+	response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
+		RefID: "A",
+		JSON:  json.RawMessage(`{"marketplace":"metrics","selectedMarketplace":"wildberries","queryType":"profitability"}`),
+	}}})
+	if err != nil {
+		t.Fatalf("QueryData() error = %v", err)
+	}
+	result := response.Responses["A"]
+	if result.Status != backend.StatusTooManyRequests || result.Error == nil {
+		t.Fatalf("rate-limit response = %+v, want status 429 and error", result)
+	}
+	if strings.Contains(result.Error.Error(), secret) || strings.Contains(fmt.Sprint(result.Frames[2].Fields[3].At(0)), secret) {
+		t.Fatalf("response exposed credential %q: %+v", secret, result)
+	}
+}
+
+func TestOzonCommissionQueryReportsUnavailableCommissionData(t *testing.T) {
+	datasource := &Datasource{
+		credentials: credentials{ozonClientID: "123", ozonAPIKey: "api-key"},
+		ozonProviderFactory: func() (marketplace.Provider, func() error, error) {
+			return testProvider{marketplace: marketplace.Ozon}, nil, nil
+		},
+	}
+	response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
+		RefID: "A",
+		JSON:  json.RawMessage(`{"marketplace":"metrics","selectedMarketplace":"ozon","queryType":"commissions"}`),
+	}}})
+	if err != nil {
+		t.Fatalf("QueryData() error = %v", err)
+	}
+	result := response.Responses["A"]
+	if result.Status != backend.StatusInternal || result.Error == nil ||
+		result.Frames[1].Fields[3].At(0) != "Ozon commission data is not available from the current provider" {
+		t.Fatalf("Ozon commission response = %+v, want explicit unavailable-data status", result)
+	}
+}
+
+func TestOzonHistoryUsesGrafanaTimeRange(t *testing.T) {
+	analytics := &testOzonAnalytics{rows: []ozon.AnalyticsRow{{
+		Dimensions: []ozon.AnalyticsDimension{{ID: "2026-09-01", Name: "2026-09-01"}},
+		Metrics:    []float64{100.5, 3},
+	}}}
+	datasource := &Datasource{
+		credentials:          credentials{ozonClientID: "123", ozonAPIKey: "api-key"},
+		ozonAnalyticsFactory: func() ozonAnalyticsAPI { return analytics },
+	}
+	from := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, time.September, 7, 23, 59, 0, 0, time.UTC)
+	response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
+		RefID:     "H",
+		JSON:      json.RawMessage(`{"marketplace":"metrics","selectedMarketplace":"ozon","queryType":"history"}`),
+		TimeRange: backend.TimeRange{From: from, To: to},
+	}}})
+	if err != nil {
+		t.Fatalf("QueryData() error = %v", err)
+	}
+	result := response.Responses["H"]
+	if result.Error != nil || analytics.from != "2026-09-01" || analytics.to != "2026-09-07" ||
+		strings.Join(analytics.metrics, ",") != "revenue,ordered_units" {
+		t.Fatalf("history request/result = %q..%q metrics %v response %+v", analytics.from, analytics.to, analytics.metrics, result)
+	}
+	if result.Frames[0].Rows() != 1 || result.Frames[0].Fields[0].At(0) != "2026-09-01" {
+		t.Fatalf("history frame = %+v", result.Frames[0])
+	}
+}
+
+func TestWildberriesHistoryReportsUnsupportedAPIHistory(t *testing.T) {
+	datasource := &Datasource{credentials: credentials{wildberriesToken: "configured"}}
+	response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
+		RefID: "H",
+		JSON:  json.RawMessage(`{"marketplace":"metrics","selectedMarketplace":"wildberries","queryType":"history"}`),
+		TimeRange: backend.TimeRange{
+			From: time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC),
+			To:   time.Date(2026, time.September, 2, 0, 0, 0, 0, time.UTC),
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("QueryData() error = %v", err)
+	}
+	result := response.Responses["H"]
+	if result.Status != backend.StatusInternal || result.Error == nil ||
+		!strings.Contains(result.Error.Error(), "requires product and upload IDs") {
+		t.Fatalf("Wildberries history response = %+v, want explicit unsupported-history error", result)
 	}
 }
 

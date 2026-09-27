@@ -84,6 +84,19 @@ type CollectionResult struct {
 // Collect retrieves all providers in order, preserving successful and partial
 // data if another provider fails. Context cancellation stops further requests.
 func Collect(ctx context.Context, providers ...Provider) (CollectionResult, error) {
+	result, collectionErr, _ := collect(ctx, providers...)
+	return result, collectionErr
+}
+
+// CollectWithErrors is Collect plus provider-level failures. It retains
+// partial results and returns joined provider errors for callers that need to
+// set a response status while still displaying the successful data.
+func CollectWithErrors(ctx context.Context, providers ...Provider) (CollectionResult, error) {
+	result, collectionErr, providerErr := collect(ctx, providers...)
+	return result, errors.Join(collectionErr, providerErr)
+}
+
+func collect(ctx context.Context, providers ...Provider) (CollectionResult, error, error) {
 	result := CollectionResult{
 		Products:  []ProductMetrics{},
 		Groups:    []ProductGroup{},
@@ -93,18 +106,19 @@ func Collect(ctx context.Context, providers ...Provider) (CollectionResult, erro
 	seen := make(map[Marketplace]struct{}, len(providers))
 	for _, provider := range providers {
 		if provider == nil {
-			return result, errors.New("marketplace provider cannot be nil")
+			return result, errors.New("marketplace provider cannot be nil"), nil
 		}
 		name := provider.Marketplace()
 		if name != Wildberries && name != Ozon {
-			return result, fmt.Errorf("unsupported marketplace provider %q", name)
+			return result, fmt.Errorf("unsupported marketplace provider %q", name), nil
 		}
 		if _, exists := seen[name]; exists {
-			return result, fmt.Errorf("duplicate marketplace provider %q", name)
+			return result, fmt.Errorf("duplicate marketplace provider %q", name), nil
 		}
 		seen[name] = struct{}{}
 	}
 
+	var providerErrors []error
 	for index, provider := range providers {
 		if err := ctx.Err(); err != nil {
 			result.Providers = append(result.Providers, ProviderStatus{
@@ -120,7 +134,7 @@ func Collect(ctx context.Context, providers ...Provider) (CollectionResult, erro
 				})
 			}
 			result.Groups, result.Warnings = Merge(result.Products)
-			return result, err
+			return result, err, errors.Join(providerErrors...)
 		}
 
 		products, err := provider.GetProductMetrics(ctx)
@@ -130,6 +144,7 @@ func Collect(ctx context.Context, providers ...Provider) (CollectionResult, erro
 			State:        ProviderAvailable,
 		}
 		if err != nil {
+			providerErrors = append(providerErrors, fmt.Errorf("%s: %w", provider.Marketplace(), err))
 			status.Error = err.Error()
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 				status.State = ProviderCancelled
@@ -156,12 +171,12 @@ func Collect(ctx context.Context, providers ...Provider) (CollectionResult, erro
 				})
 			}
 			result.Groups, result.Warnings = Merge(result.Products)
-			return result, cause
+			return result, cause, errors.Join(providerErrors...)
 		}
 	}
 
 	result.Groups, result.Warnings = Merge(result.Products)
-	return result, nil
+	return result, nil, errors.Join(providerErrors...)
 }
 
 // NormalizeSellerSKU trims surrounding whitespace and folds case for matching.
