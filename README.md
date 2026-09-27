@@ -28,6 +28,20 @@ The `wb-tariffs` route targets Wildberries' common API (`common-api.wildberries.
 
 The plugin's `plugin.json` also declares Grafana data-source proxy routes with these same IDs. The current Go backend sends queries directly to the fixed API hosts using the configured credentials; the proxy routes are available for future browser-side/plugin proxy calls and do not change that backend request path.
 
+## Wildberries Go client
+
+The `pkg/wildberries` package provides a typed seller API client:
+
+```go
+client := wildberries.NewClient(apiKey)
+commissions, err := client.GetCommissions(ctx, "ru")
+products, err := client.GetProducts(ctx, 1000, 0)
+```
+
+It uses a 30-second HTTP timeout, sends the API key in the `Authorization` header, logs only request method/path/status/duration, and retries server (5xx) errors with context-aware exponential backoff. The client includes `GetUploadTask` and `GetUploadTaskDetails` for processed price uploads, following the [commission](https://dev.wildberries.ru/openapi/rates#tag/fees/operation/getV1TariffsCommission), [current product prices](https://dev.wildberries.ru/openapi/item-management#tag/pricesAndDiscounts/operation/getV2ListGoodsFilter), and [processed upload history](https://dev.wildberries.ru/openapi/item-management#tag/pricesAndDiscounts/operation/getV2HistoryTasks) operations.
+
+`GetPriceHistory(ctx, nmID, dateFrom, dateTo)` currently returns `ErrUploadTaskEnumerationUnsupported`. Wildberries' processed-history endpoints (`GET /api/v2/history/tasks` and `GET /api/v2/history/goods/task`) both require an `uploadID`, and the API does not expose an operation to enumerate those IDs. `GetPriceHistoryForUploads` can retrieve and filter price points when the caller already has the upload IDs. Those points represent changes submitted through the Wildberries API only; changes made manually in the seller cabinet are not available through these endpoints and are not included.
+
 Grafana data is stored in the `grafana-data` named volume. To stop Grafana:
 
 ```sh
