@@ -1,0 +1,79 @@
+{
+  "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
+  "type": "datasource",
+  "name": "Marketplace Profit Monitor",
+  "id": "pumba3000lvl-profitmonitor-datasource",
+  "category": "other",
+  "metrics": true,
+  "backend": true,
+  "executable": "gpx_marketplace_profit",
+  "alerting": true,
+  "info": {
+    "description": "Query Wildberries and Ozon seller APIs from Grafana. Marketplace response normalization and profit calculations are not included yet.",
+    "author": {
+      "name": "Pumba3000lvl"
+    },
+    "keywords": ["marketplace", "wildberries", "ozon", "profit", "datasource"],
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "links": [
+      {
+        "name": "documentation",
+        "url": "https://github.com/Pumba3000lvl/Marketplace-Profit-Monitor#readme"
+      },
+      {
+        "name": "repository",
+        "url": "https://github.com/Pumba3000lvl/Marketplace-Profit-Monitor"
+      },
+      {
+        "name": "raise issue",
+        "url": "https://github.com/Pumba3000lvl/Marketplace-Profit-Monitor/issues"
+      }
+    ],
+    "screenshots": [],
+    "version": "%VERSION%",
+    "updated": "%TODAY%"
+  },
+  "dependencies": {
+    "grafanaDependency": ">=11.0.0",
+    "plugins": []
+  },
+  "routes": [
+    {
+      "path": "wb-tariffs",
+      "url": "https://common-api.wildberries.ru",
+      "headers": [
+        {
+          "name": "Authorization",
+          "content": "{{ .SecureJsonData.wildberriesToken }}"
+        }
+      ]
+    },
+    {
+      "path": "wb-prices",
+      "url": "https://discounts-prices-api.wildberries.ru",
+      "headers": [
+        {
+          "name": "Authorization",
+          "content": "{{ .SecureJsonData.wildberriesToken }}"
+        }
+      ]
+    },
+    {
+      "path": "ozon",
+      "url": "https://api-seller.ozon.ru",
+      "headers": [
+        {
+          "name": "Client-Id",
+          "content": "{{ .SecureJsonData.ozonClientId }}"
+        },
+        {
+          "name": "Api-Key",
+          "content": "{{ .SecureJsonData.ozonApiKey }}"
+        }
+      ]
+    }
+  ]
+}
