@@ -41,26 +41,26 @@ export function ConfigEditor({ options, onOptionsChange }: Props) {
 
   const validationErrors: string[] = [];
   if (wildberriesKeyInput && !wildberriesKeyInput.trim()) {
-    validationErrors.push('Enter a non-empty Wildberries API key.');
+    validationErrors.push('Укажите непустой API-ключ Wildberries.');
   }
   if (ozonKeyInput && !ozonKeyInput.trim()) {
-    validationErrors.push('Enter a non-empty Ozon API key.');
+    validationErrors.push('Укажите непустой API-ключ Ozon.');
   }
   if (ozonClientId && !/^\d+$/.test(ozonClientId.trim())) {
-    validationErrors.push('Ozon Client-Id must contain digits only.');
+    validationErrors.push('Идентификатор клиента Ozon (Client-Id) должен содержать только цифры.');
   }
 
   const hasTelegramToken =
     Boolean(telegramTokenInput.trim()) || Boolean(secureJsonFields?.telegramBotToken);
   const hasTelegramChatId = Boolean(telegramChatId.trim());
   if (telegramTokenInput && !/^\d+:[A-Za-z0-9_-]+$/.test(telegramTokenInput.trim())) {
-    validationErrors.push('Telegram Bot Token has an invalid format.');
+    validationErrors.push('Неверный формат токена Telegram-бота.');
   }
   if (telegramChatId && !/^-?\d+$|^@[A-Za-z0-9_]{5,}$/.test(telegramChatId.trim())) {
-    validationErrors.push('Telegram Chat ID must be a numeric ID or @channel username.');
+    validationErrors.push('Укажите числовой ID чата Telegram или имя канала в формате @channel.');
   }
   if (hasTelegramToken !== hasTelegramChatId) {
-    validationErrors.push('Configure both Telegram alert fields, or leave both empty.');
+    validationErrors.push('Заполните оба поля Telegram или оставьте их пустыми.');
   }
 
   const savedMarketplaces: MarketplaceName[] = [];
@@ -143,7 +143,7 @@ export function ConfigEditor({ options, onOptionsChange }: Props) {
       );
       setResults(response.results);
     } catch {
-      setTestError('Unable to run the connection test. Save the data source and try again.');
+      setTestError('Не удалось проверить подключение. Сохраните источник данных и повторите попытку.');
     } finally {
       setTesting(false);
     }
@@ -151,82 +151,90 @@ export function ConfigEditor({ options, onOptionsChange }: Props) {
 
   return (
     <>
-      <InlineField label="Wildberries API Key" labelWidth={24} tooltip="Stored encrypted by Grafana.">
+      <InlineField label="API-ключ Wildberries" labelWidth={24} tooltip="Хранится в Grafana в зашифрованном виде.">
         <SecretInput
           isConfigured={secureJsonFields?.wildberriesToken ?? false}
           value={wildberriesKeyInput}
-          placeholder="Enter Wildberries API key"
+          placeholder="Введите API-ключ Wildberries"
           width={40}
           onChange={(event) => setSecret('wildberriesToken', event)}
           onReset={() => resetSecret('wildberriesToken')}
         />
       </InlineField>
-      <InlineField label="Ozon Client-Id" labelWidth={24} tooltip="Stored in datasource settings.">
+      <InlineField label="Ozon Client-Id" labelWidth={24} tooltip="Хранится в настройках источника данных.">
         <Input
           value={ozonClientId}
-          placeholder="Enter Ozon Client-Id"
+          placeholder="Введите Client-Id Ozon"
           width={40}
           onChange={(event) => setJSONData('ozonClientId', event.currentTarget.value)}
         />
       </InlineField>
-      <InlineField label="Ozon API Key" labelWidth={24} tooltip="Stored encrypted by Grafana.">
+      <InlineField label="API-ключ Ozon" labelWidth={24} tooltip="Хранится в Grafana в зашифрованном виде.">
         <SecretInput
           isConfigured={secureJsonFields?.ozonApiKey ?? false}
           value={ozonKeyInput}
-          placeholder="Enter Ozon API key"
+          placeholder="Введите API-ключ Ozon"
           width={40}
           onChange={(event) => setSecret('ozonApiKey', event)}
           onReset={() => resetSecret('ozonApiKey')}
         />
       </InlineField>
-      <InlineField label="Telegram Bot Token" labelWidth={24} tooltip="Stored encrypted by Grafana.">
+      <InlineField
+        label="Токен Telegram-бота (устаревшее поле)"
+        labelWidth={24}
+        tooltip="Для совместимости. Не используется оповещениями; настройте контактные точки через provisioning Grafana."
+      >
         <SecretInput
           isConfigured={secureJsonFields?.telegramBotToken ?? false}
           value={telegramTokenInput}
-          placeholder="Optional alert bot token"
+          placeholder="Необязательный токен бота для оповещений"
           width={40}
           onChange={(event) => setSecret('telegramBotToken', event)}
           onReset={() => resetSecret('telegramBotToken')}
         />
       </InlineField>
-      <InlineField label="Telegram Chat ID" labelWidth={24} tooltip="Stored in datasource settings.">
+      <InlineField
+        label="ID чата Telegram (устаревшее поле)"
+        labelWidth={24}
+        tooltip="Для совместимости. Не используется оповещениями; настройте контактные точки через provisioning Grafana."
+      >
         <Input
           value={telegramChatId}
-          placeholder="Optional alert chat ID"
+          placeholder="Необязательный ID чата для оповещений"
           width={40}
           onChange={(event) => setJSONData('telegramChatId', event.currentTarget.value)}
         />
       </InlineField>
 
       {validationErrors.map((message) => (
-        <Alert key={message} title="Invalid configuration" severity="error">
+        <Alert key={message} title="Некорректная настройка" severity="error">
           {message}
         </Alert>
       ))}
 
-      <InlineField label="Connection test" labelWidth={24}>
+      <InlineField label="Проверка подключения" labelWidth={24}>
         <Button
           type="button"
           onClick={testConnection}
           disabled={!canTest || validationErrors.length > 0}
           icon={testing ? 'fa fa-spinner' : 'plug'}
         >
-          {testing ? 'Testing…' : 'Test connection'}
+          {testing ? 'Проверка…' : 'Проверить подключение'}
         </Button>
       </InlineField>
-      {!options.uid && <Alert title="Save the data source before testing" severity="info" />}
+      {!options.uid && <Alert title="Сначала сохраните источник данных" severity="info" />}
       {hasPendingMarketplaceCredentials && (
-        <Alert title="Save changes before testing" severity="info">
-          The connection test uses saved credentials.
+        <Alert title="Сохраните изменения перед проверкой" severity="info">
+          Для проверки используются сохранённые учётные данные.
         </Alert>
       )}
       {savedMarketplaces.length === 0 && !hasPendingMarketplaceCredentials && (
-        <Alert title="No saved marketplace credentials" severity="info">
-          Add credentials and save the data source before testing.
+        <Alert title="Нет сохранённых учётных данных маркетплейсов" severity="info">
+          Добавьте учётные данные и сохраните источник данных перед проверкой.
         </Alert>
       )}
       {testError && (
-        <Alert title="Connection test failed" severity="error">
+        <Alert title="Не удалось проверить подключение" severity="error">
           {testError}
         </Alert>
       )}
@@ -236,7 +244,7 @@ export function ConfigEditor({ options, onOptionsChange }: Props) {
           title={result.marketplace === 'wildberries' ? 'Wildberries' : 'Ozon'}
           severity={result.ok ? 'success' : 'error'}
         >
-          {result.ok ? 'Connection successful.' : result.message}
+          {result.ok ? 'Подключение работает.' : result.message}
         </Alert>
       ))}
     </>

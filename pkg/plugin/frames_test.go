@@ -25,10 +25,10 @@ func TestNewCommissionsFrame(t *testing.T) {
 		data.FieldTypeFloat64, data.FieldTypeFloat64,
 	})
 	assertUTCValue(t, frame.Fields[0], instant)
-	assertFieldConfig(t, frame.Fields[0], "Time", "")
-	assertFieldConfig(t, frame.Fields[2], "Commission (%)", "percent")
-	assertFieldConfig(t, frame.Fields[3], "Logistics Cost", "currencyRUB")
-	assertFieldConfig(t, frame.Fields[4], "Storage Cost", "currencyRUB")
+	assertFieldConfig(t, frame.Fields[0], "Время", "")
+	assertFieldConfig(t, frame.Fields[2], "Комиссия (%)", "percent")
+	assertFieldConfig(t, frame.Fields[3], "Логистика", "currencyRUB")
+	assertFieldConfig(t, frame.Fields[4], "Хранение", "currencyRUB")
 	if got := []interface{}{
 		frame.Fields[1].At(0), frame.Fields[2].At(0), frame.Fields[3].At(0), frame.Fields[4].At(0),
 	}; fmt.Sprint(got) != "[Electronics 12.5 34.25 5.75]" {
@@ -54,11 +54,11 @@ func TestNewProfitabilityFrame(t *testing.T) {
 		data.FieldTypeFloat64, data.FieldTypeFloat64, data.FieldTypeBool,
 	})
 	assertUTCValue(t, frame.Fields[0], instant)
-	assertFieldConfig(t, frame.Fields[1], "Product Name", "")
-	assertFieldConfig(t, frame.Fields[2], "Price", "currencyRUB")
-	assertFieldConfig(t, frame.Fields[3], "Net Margin (RUB)", "currencyRUB")
-	assertFieldConfig(t, frame.Fields[4], "Net Margin (%)", "percent")
-	assertFieldConfig(t, frame.Fields[5], "Is Loss", "")
+	assertFieldConfig(t, frame.Fields[1], "Название товара", "")
+	assertFieldConfig(t, frame.Fields[2], "Цена", "currencyRUB")
+	assertFieldConfig(t, frame.Fields[3], "Чистая маржа (₽)", "currencyRUB")
+	assertFieldConfig(t, frame.Fields[4], "Чистая маржа (%)", "percent")
+	assertFieldConfig(t, frame.Fields[5], "Убыточный товар", "")
 	if got := []interface{}{
 		frame.Fields[1].At(0), frame.Fields[2].At(0), frame.Fields[3].At(0),
 		frame.Fields[4].At(0), frame.Fields[5].At(0),
@@ -79,8 +79,8 @@ func TestNewPriceHistoryFrame(t *testing.T) {
 		data.FieldTypeTime, data.FieldTypeString, data.FieldTypeFloat64,
 	})
 	assertUTCValue(t, frame.Fields[0], instant)
-	assertFieldConfig(t, frame.Fields[1], "Product ID", "")
-	assertFieldConfig(t, frame.Fields[2], "Price", "currencyRUB")
+	assertFieldConfig(t, frame.Fields[1], "ID товара", "")
+	assertFieldConfig(t, frame.Fields[2], "Цена", "currencyRUB")
 	if frame.Fields[1].At(0) != "sku-42" || frame.Fields[2].At(0) != 123.45 {
 		t.Fatalf("price history values = %v/%v, want sku-42/123.45", frame.Fields[1].At(0), frame.Fields[2].At(0))
 	}

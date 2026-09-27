@@ -140,7 +140,7 @@ func TestCallResourceSanitizesMarketplaceErrors(t *testing.T) {
 		t.Fatalf("decode CallResource() response: %v", err)
 	}
 	if len(result.Results) != 1 || result.Results[0].OK ||
-		result.Results[0].Message != "Authentication failed. Check the credentials and API access." {
+		result.Results[0].Message != "Не удалось пройти аутентификацию. Проверьте учётные данные и доступ к API." {
 		t.Fatalf("connection result = %+v, want a sanitized authentication failure", result.Results)
 	}
 }

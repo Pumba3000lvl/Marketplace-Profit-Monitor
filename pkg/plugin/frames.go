@@ -51,11 +51,11 @@ func NewCommissionsFrame(rows []CommissionRow) *data.Frame {
 	}
 
 	return newTypedFrame("commissions",
-		newTypedField("time", "Time", "", data.FieldTypeTime, times),
-		newTypedField("category", "Category", "", data.FieldTypeString, categories),
-		newTypedField("commission_pct", "Commission (%)", "percent", data.FieldTypeFloat64, commissionPcts),
-		newTypedField("logistics_cost", "Logistics Cost", "currencyRUB", data.FieldTypeFloat64, logisticsCosts),
-		newTypedField("storage_cost", "Storage Cost", "currencyRUB", data.FieldTypeFloat64, storageCosts),
+		newTypedField("time", "Время", "", data.FieldTypeTime, times),
+		newTypedField("category", "Категория", "", data.FieldTypeString, categories),
+		newTypedField("commission_pct", "Комиссия (%)", "percent", data.FieldTypeFloat64, commissionPcts),
+		newTypedField("logistics_cost", "Логистика", "currencyRUB", data.FieldTypeFloat64, logisticsCosts),
+		newTypedField("storage_cost", "Хранение", "currencyRUB", data.FieldTypeFloat64, storageCosts),
 	)
 }
 
@@ -79,12 +79,12 @@ func NewProfitabilityFrame(rows []ProfitabilityRow) *data.Frame {
 	}
 
 	return newTypedFrame("profitability",
-		newTypedField("time", "Time", "", data.FieldTypeTime, times),
-		newTypedField("product_name", "Product Name", "", data.FieldTypeString, productNames),
-		newTypedField("price", "Price", "currencyRUB", data.FieldTypeFloat64, prices),
-		newTypedField("net_margin_rub", "Net Margin (RUB)", "currencyRUB", data.FieldTypeFloat64, netMarginsRUB),
-		newTypedField("net_margin_pct", "Net Margin (%)", "percent", data.FieldTypeFloat64, netMarginPcts),
-		newTypedField("is_loss", "Is Loss", "", data.FieldTypeBool, isLosses),
+		newTypedField("time", "Время", "", data.FieldTypeTime, times),
+		newTypedField("product_name", "Название товара", "", data.FieldTypeString, productNames),
+		newTypedField("price", "Цена", "currencyRUB", data.FieldTypeFloat64, prices),
+		newTypedField("net_margin_rub", "Чистая маржа (₽)", "currencyRUB", data.FieldTypeFloat64, netMarginsRUB),
+		newTypedField("net_margin_pct", "Чистая маржа (%)", "percent", data.FieldTypeFloat64, netMarginPcts),
+		newTypedField("is_loss", "Убыточный товар", "", data.FieldTypeBool, isLosses),
 	)
 }
 
@@ -101,9 +101,9 @@ func NewPriceHistoryFrame(rows []PriceHistoryRow) *data.Frame {
 	}
 
 	return newTypedFrame("price_history",
-		newTypedField("time", "Time", "", data.FieldTypeTime, times),
-		newTypedField("product_id", "Product ID", "", data.FieldTypeString, productIDs),
-		newTypedField("price", "Price", "currencyRUB", data.FieldTypeFloat64, prices),
+		newTypedField("time", "Время", "", data.FieldTypeTime, times),
+		newTypedField("product_id", "ID товара", "", data.FieldTypeString, productIDs),
+		newTypedField("price", "Цена", "currencyRUB", data.FieldTypeFloat64, prices),
 	)
 }
 
@@ -121,4 +121,17 @@ func newTypedField(name, displayName, unit string, fieldType data.FieldType, val
 		panic("field values do not match the declared Grafana field type")
 	}
 	return field
+}
+
+func setFrameDisplayNames(frame *data.Frame, names map[string]string) {
+	for _, field := range frame.Fields {
+		displayName, exists := names[field.Name]
+		if !exists {
+			continue
+		}
+		if field.Config == nil {
+			field.SetConfig(&data.FieldConfig{})
+		}
+		field.Config.DisplayNameFromDS = displayName
+	}
 }

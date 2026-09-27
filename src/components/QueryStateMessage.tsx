@@ -17,8 +17,8 @@ interface QueryStateMessageContent {
 
 const QUERY_STATE_MESSAGES: Record<QueryStateMessageType, QueryStateMessageContent> = {
   [QueryStateMessageType.ApiKeyNotConfigured]: {
-    title: 'Настройка data source',
-    message: 'Настройте подключение в настройках data source',
+    title: 'Настройка источника данных',
+    message: 'Настройте подключение в параметрах источника данных',
     severity: 'warning',
   },
   [QueryStateMessageType.NoCategoriesSelected]: {
@@ -33,7 +33,7 @@ const QUERY_STATE_MESSAGES: Record<QueryStateMessageType, QueryStateMessageConte
   },
   [QueryStateMessageType.Unauthorized]: {
     title: 'Ошибка авторизации',
-    message: 'Неверный API-ключ, проверьте настройки',
+    message: 'Неверный API-ключ. Проверьте настройки подключения.',
     severity: 'error',
   },
   [QueryStateMessageType.NoData]: {

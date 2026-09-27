@@ -31,26 +31,26 @@ type connectionTestResponse struct {
 
 func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
 	if req.Path != "test-connection" && req.Path != "/test-connection" {
-		return sendResourceJSON(sender, http.StatusNotFound, map[string]string{"error": "unknown datasource resource"})
+		return sendResourceJSON(sender, http.StatusNotFound, map[string]string{"error": "Неизвестный ресурс источника данных."})
 	}
 	if req.Method != http.MethodPost {
-		return sendResourceJSON(sender, http.StatusMethodNotAllowed, map[string]string{"error": "method must be POST"})
+		return sendResourceJSON(sender, http.StatusMethodNotAllowed, map[string]string{"error": "Допустимый метод запроса: POST."})
 	}
 	if len(req.Body) == 0 || len(req.Body) > 4096 {
-		return sendResourceJSON(sender, http.StatusBadRequest, map[string]string{"error": "invalid test request"})
+		return sendResourceJSON(sender, http.StatusBadRequest, map[string]string{"error": "Некорректный запрос проверки подключения."})
 	}
 
 	var testRequest connectionTestRequest
 	if err := json.Unmarshal(req.Body, &testRequest); err != nil || len(testRequest.Marketplaces) == 0 {
-		return sendResourceJSON(sender, http.StatusBadRequest, map[string]string{"error": "select at least one configured marketplace"})
+		return sendResourceJSON(sender, http.StatusBadRequest, map[string]string{"error": "Выберите хотя бы один настроенный маркетплейс."})
 	}
 	seen := make(map[string]struct{}, len(testRequest.Marketplaces))
 	for _, name := range testRequest.Marketplaces {
 		if name != "wildberries" && name != "ozon" {
-			return sendResourceJSON(sender, http.StatusBadRequest, map[string]string{"error": "unknown marketplace"})
+			return sendResourceJSON(sender, http.StatusBadRequest, map[string]string{"error": "Неизвестный маркетплейс."})
 		}
 		if _, exists := seen[name]; exists {
-			return sendResourceJSON(sender, http.StatusBadRequest, map[string]string{"error": "duplicate marketplace"})
+			return sendResourceJSON(sender, http.StatusBadRequest, map[string]string{"error": "Маркетплейс указан несколько раз."})
 		}
 		seen[name] = struct{}{}
 		if err := d.validateCredentials(name); err != nil {
@@ -83,10 +83,10 @@ func (d *Datasource) configuredMarketplaces() ([]string, error) {
 	hasOzonAPIKey := strings.TrimSpace(d.credentials.ozonAPIKey) != ""
 
 	if hasOzonClientID != hasOzonAPIKey {
-		return nil, errors.New("configure both Ozon Client-Id and API key")
+		return nil, errors.New("Укажите Client-Id и API-ключ Ozon.")
 	}
 	if hasOzonClientID && !isNumericID(strings.TrimSpace(d.credentials.ozonClientID)) {
-		return nil, errors.New("Ozon Client-Id must contain digits only")
+		return nil, errors.New("Client-Id Ozon должен содержать только цифры.")
 	}
 	var configured []string
 	if hasWildberries {
@@ -96,7 +96,7 @@ func (d *Datasource) configuredMarketplaces() ([]string, error) {
 		configured = append(configured, "ozon")
 	}
 	if len(configured) == 0 {
-		return nil, errors.New("configure a Wildberries API key or both Ozon credentials")
+		return nil, errors.New("Укажите API-ключ Wildberries или оба учётных параметра Ozon.")
 	}
 	return configured, nil
 }
@@ -134,30 +134,30 @@ func (d *Datasource) testConnection(ctx context.Context, marketplace string) str
 			request.Header.Set("Content-Type", "application/json")
 		}
 	default:
-		return "Unknown marketplace."
+		return "Неизвестный маркетплейс."
 	}
 	if err != nil {
-		return "Could not create a marketplace API request."
+		return "Не удалось сформировать запрос к API маркетплейса."
 	}
 
 	response, err := d.client.Do(request)
 	if err != nil {
-		return "Could not reach the marketplace API."
+		return "Не удалось подключиться к API маркетплейса."
 	}
 	defer response.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxConnectionResponseBytes+1))
 	if err != nil || len(body) > maxConnectionResponseBytes {
-		return "Could not read the marketplace API response."
+		return "Не удалось прочитать ответ API маркетплейса."
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		switch response.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden:
-			return "Authentication failed. Check the credentials and API access."
+			return "Не удалось пройти аутентификацию. Проверьте учётные данные и доступ к API."
 		case http.StatusTooManyRequests:
-			return "Marketplace API rate limit reached. Try again shortly."
+			return "Превышен лимит запросов к API маркетплейса. Повторите попытку позже."
 		default:
-			return fmt.Sprintf("Marketplace API returned HTTP %d.", response.StatusCode)
+			return fmt.Sprintf("API маркетплейса вернул код HTTP %d.", response.StatusCode)
 		}
 	}
 	if err := checkConnectionResponse(marketplace, body); err != nil {
@@ -169,19 +169,19 @@ func (d *Datasource) testConnection(ctx context.Context, marketplace string) str
 func checkConnectionResponse(marketplace string, body []byte) error {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(body, &envelope); err != nil || envelope == nil {
-		return errors.New("Marketplace API returned an invalid response.")
+		return errors.New("API маркетплейса вернул некорректный ответ.")
 	}
 	if marketplace == "wildberries" {
 		var hasError bool
 		if err := json.Unmarshal(envelope["error"], &hasError); err == nil && hasError {
-			return errors.New("Wildberries rejected the request. Check the API key and permissions.")
+			return errors.New("Wildberries отклонил запрос. Проверьте API-ключ и права доступа.")
 		}
 		return nil
 	}
 	if rawCode := strings.TrimSpace(string(envelope["code"])); rawCode != "" && rawCode != "null" {
 		code := strings.Trim(strings.TrimSpace(rawCode), `"`)
 		if code != "" && code != "0" {
-			return errors.New("Ozon rejected the request. Check the credentials and API access.")
+			return errors.New("Ozon отклонил запрос. Проверьте учётные данные и доступ к API.")
 		}
 	}
 	return nil
@@ -191,18 +191,18 @@ func (d *Datasource) validateCredentials(marketplace string) error {
 	switch marketplace {
 	case "wildberries", "wb-tariffs", "wb-prices":
 		if strings.TrimSpace(d.credentials.wildberriesToken) == "" {
-			return errors.New("configure a Wildberries API key")
+			return errors.New("Укажите API-ключ Wildberries.")
 		}
 	case "ozon":
 		clientID := strings.TrimSpace(d.credentials.ozonClientID)
 		if clientID == "" || strings.TrimSpace(d.credentials.ozonAPIKey) == "" {
-			return errors.New("configure both Ozon Client-Id and API key")
+			return errors.New("Укажите Client-Id и API-ключ Ozon.")
 		}
 		if !isNumericID(clientID) {
-			return errors.New("Ozon Client-Id must contain digits only")
+			return errors.New("Client-Id Ozon должен содержать только цифры.")
 		}
 	default:
-		return errors.New("unknown marketplace")
+		return errors.New("Неизвестный маркетплейс.")
 	}
 	return nil
 }
@@ -217,4 +217,15 @@ func isNumericID(value string) bool {
 		}
 	}
 	return true
+}
+
+func displayMarketplaceName(name string) string {
+	switch name {
+	case "wildberries":
+		return "Wildberries"
+	case "ozon":
+		return "Ozon"
+	default:
+		return name
+	}
 }

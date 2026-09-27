@@ -114,7 +114,7 @@ func TestAlertQueryReturnsLabeledSeriesOnlyForKnownValues(t *testing.T) {
 	}
 	if frame.Fields[1].Labels["marketplace"] != "wb" ||
 		frame.Fields[1].Labels["product_id"] != "product-1" ||
-	frame.Fields[1].Labels["seller_sku"] != "SKU-1" {
+		frame.Fields[1].Labels["seller_sku"] != "SKU-1" {
 		t.Fatalf("alert labels = %v, want stable product labels", frame.Fields[1].Labels)
 	}
 
@@ -137,10 +137,10 @@ func TestAlertQueryDoesNotSubstituteUnsupportedOrMissingMetrics(t *testing.T) {
 		credentials: credentials{wildberriesToken: "wb-key"},
 		wildberriesProviderFactory: func() (marketplace.Provider, func() error, error) {
 			return testProvider{marketplace: marketplace.Wildberries, products: []marketplace.ProductMetrics{{
-				Marketplace: marketplace.Wildberries,
-				ProductID:   "product-1",
+				Marketplace:  marketplace.Wildberries,
+				ProductID:    "product-1",
 				CurrentPrice: floatPointer(100),
-				UpdatedAt: time.Date(2026, time.September, 27, 9, 0, 0, 0, time.UTC),
+				UpdatedAt:    time.Date(2026, time.September, 27, 9, 0, 0, 0, time.UTC),
 			}}}, nil, nil
 		},
 	}
@@ -295,10 +295,10 @@ func TestMetricsQueryBothProvidersPreservesDataAndAddsFailureNotices(t *testing.
 		t.Fatalf("partial response = %+v, want successful status with preserved frames", result)
 	}
 	if result.Frames[0].Rows() != 1 || result.Frames[0].Fields[0].At(0) != "wb" ||
-		result.Frames[1].Rows() != 2 || !strings.Contains(result.Frames[1].Fields[1].At(1).(string), "unavailable") {
+		result.Frames[1].Rows() != 2 || !strings.Contains(result.Frames[1].Fields[1].At(1).(string), "Недоступен") {
 		t.Fatalf("partial result lost provider data/status: %+v", result.Frames)
 	}
-	assertWarningOnEveryFrame(t, result.Frames, "Ozon data is unavailable.")
+	assertWarningOnEveryFrame(t, result.Frames, "Ozon: данные недоступны.")
 }
 
 func TestMetricsQueryBothProvidersUnavailableReturnsUsefulError(t *testing.T) {
@@ -322,7 +322,7 @@ func TestMetricsQueryBothProvidersUnavailableReturnsUsefulError(t *testing.T) {
 	if result.Status != backend.StatusInternal || result.Error == nil || len(result.Frames) != 0 {
 		t.Fatalf("unavailable response = %+v, want useful internal error without empty data frames", result)
 	}
-	if !strings.Contains(result.Error.Error(), "No marketplace data is available") ||
+	if !strings.Contains(result.Error.Error(), "Данные маркетплейсов недоступны") ||
 		strings.Contains(result.Error.Error(), "network unavailable") {
 		t.Fatalf("unavailable error = %q, want clear sanitized message", result.Error)
 	}
@@ -357,10 +357,10 @@ func TestMetricsQueryPreservesOzonPartialRowsAndWarns(t *testing.T) {
 	}
 	if result.Frames[0].Rows() != 1 || result.Frames[0].Fields[1].At(0) != "ozon-1" ||
 		result.Frames[0].Fields[6].At(0) != &price ||
-		result.Frames[1].Fields[1].At(0) != "partial" {
+		result.Frames[1].Fields[1].At(0) != "Частичные данные" {
 		t.Fatalf("partial Ozon row/status was not retained: %+v", result.Frames)
 	}
-	assertWarningOnEveryFrame(t, result.Frames, "Ozon returned partial data; some values may be missing.")
+	assertWarningOnEveryFrame(t, result.Frames, "Ozon: получены не все данные, некоторые значения могут отсутствовать.")
 }
 
 func TestMetricsQueryExpiredCredentialProvidesSettingsHint(t *testing.T) {
@@ -386,8 +386,8 @@ func TestMetricsQueryExpiredCredentialProvidesSettingsHint(t *testing.T) {
 	}
 	result := response.Responses["A"]
 	if result.Status != backend.StatusUnauthorized || result.Error == nil ||
-		!strings.Contains(result.Error.Error(), "credentials are invalid or expired") ||
-		!strings.Contains(result.Error.Error(), "Update them in datasource settings") {
+		!strings.Contains(result.Error.Error(), "учётные данные неверны или устарели") ||
+		!strings.Contains(result.Error.Error(), "настройках источника данных") {
 		t.Fatalf("expired credential response = %+v, want unauthorized status and settings hint", result)
 	}
 	if strings.Contains(result.Error.Error(), secret) || strings.Contains(result.Error.Error(), "raw provider response") {
@@ -464,10 +464,10 @@ func TestOzonCommissionQueryReportsUnavailableCommissionData(t *testing.T) {
 	}
 	result := response.Responses["A"]
 	if result.Status != backend.StatusOK || result.Error != nil ||
-		result.Frames[1].Fields[3].At(0) != "Ozon commission data is not available from the current provider" {
+		result.Frames[1].Fields[3].At(0) != ozonCommissionUnavailableMessage {
 		t.Fatalf("Ozon commission response = %+v, want successful response with explicit warning", result)
 	}
-	assertWarningOnEveryFrame(t, result.Frames, "Ozon commission data is not available from the current provider")
+	assertWarningOnEveryFrame(t, result.Frames, ozonCommissionUnavailableMessage)
 }
 
 func TestOzonHistoryUsesGrafanaTimeRange(t *testing.T) {
@@ -515,7 +515,7 @@ func TestWildberriesHistoryReportsUnsupportedAPIHistory(t *testing.T) {
 	}
 	result := response.Responses["H"]
 	if result.Status != backend.StatusInternal || result.Error == nil ||
-		!strings.Contains(result.Error.Error(), "requires product and upload IDs") {
+		!strings.Contains(result.Error.Error(), "требует ID товара и загрузки") {
 		t.Fatalf("Wildberries history response = %+v, want explicit unsupported-history error", result)
 	}
 }
@@ -557,6 +557,16 @@ func TestMetricsDataResponsePreservesProductMetricsAndNullableValues(t *testing.
 	if productFrame.Rows() != 1 || productFrame.Fields[1].At(0) != "offer-1" ||
 		productFrame.Fields[2].At(0) != "123" || productFrame.Fields[4].At(0) != "SKU-1" {
 		t.Fatalf("product row did not preserve IDs or normalized SKU: %#v", productFrame)
+	}
+	if productFrame.Fields[0].Config.DisplayNameFromDS != "Маркетплейс" ||
+		productFrame.Fields[14].Config.DisplayNameFromDS != "Чистая маржа" ||
+		response.Frames[2].Fields[1].At(0) != "Нет данных" ||
+		response.Frames[3].Fields[3].At(0) != "Не указан артикул продавца (SKU)" {
+		t.Errorf("metric frames are not fully localized: product=%q/%q state=%v warning=%v",
+			productFrame.Fields[0].Config.DisplayNameFromDS,
+			productFrame.Fields[14].Config.DisplayNameFromDS,
+			response.Frames[2].Fields[1].At(0),
+			response.Frames[3].Fields[3].At(0))
 	}
 	actualPrice, priceOK := productFrame.Fields[8].At(0).(*float64)
 	actualCommission, commissionOK := productFrame.Fields[9].At(0).(*float64)

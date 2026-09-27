@@ -86,18 +86,18 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
 
   return (
     <Stack gap={1}>
-      <InlineField label="Marketplace" labelWidth={20}>
+      <InlineField label="Маркетплейс" labelWidth={20}>
         <Select<MarketplaceSelection>
-          aria-label="Marketplace"
+          aria-label="Маркетплейс"
           options={MARKETPLACE_SELECT_OPTIONS}
           value={MARKETPLACE_SELECT_OPTIONS.find((option) => option.value === selectedMarketplace)}
           onChange={onMarketplaceChange}
           width={40}
         />
       </InlineField>
-      <InlineField label="Query type" labelWidth={20}>
+      <InlineField label="Тип запроса" labelWidth={20}>
         <Select<MarketplaceQueryType>
-          aria-label="Query type"
+          aria-label="Тип запроса"
           options={QUERY_TYPE_SELECT_OPTIONS}
           value={QUERY_TYPE_SELECT_OPTIONS.find((option) => option.value === (query.queryType ?? 'profitability'))}
           onChange={(option) => {
@@ -110,12 +110,12 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
       </InlineField>
       {isAlertQuery && (
         <InlineField
-          label="Alert metric"
+          label="Метрика оповещения"
           labelWidth={20}
-          tooltip="Returns only known numeric values as labeled time series. Unsupported or missing source data produces no data, never a zero."
+          tooltip="Возвращаются только известные числовые значения в виде временных рядов с метками. Для неподдерживаемых метрик или отсутствующих данных возвращается пустой результат, а не ноль."
         >
           <Select<AlertMetric>
-            aria-label="Alert metric"
+            aria-label="Метрика оповещения"
             options={ALERT_METRIC_SELECT_OPTIONS}
             value={ALERT_METRIC_SELECT_OPTIONS.find((option) => option.value === query.alertMetric)}
             onChange={(option) => {
@@ -128,12 +128,12 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
         </InlineField>
       )}
       <InlineField
-        label="Categories"
+        label="Категории"
         labelWidth={20}
-        tooltip="Static category groups are namespaced by marketplace, so Wildberries and Ozon categories remain distinct."
+        tooltip="Списки категорий разделены по маркетплейсам: категории Wildberries и Ozon не смешиваются."
       >
         <MultiSelect
-          aria-label="Categories"
+          aria-label="Категории"
           options={categoryOptions}
           value={categoryOptions.filter((option) => option.value !== undefined && categories.includes(option.value))}
           onChange={(options) =>
@@ -146,19 +146,19 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
         />
       </InlineField>
       <InlineField
-        label="Time range"
+        label="Период"
         labelWidth={20}
-        tooltip="The query uses the time range selected in Grafana's dashboard toolbar."
+        tooltip="Используется период, выбранный на панели инструментов дашборда Grafana."
       >
-        <Input aria-label="Grafana dashboard time range" disabled value="Uses dashboard time range" width={40} />
+        <Input aria-label="Период дашборда Grafana" disabled value="Используется период дашборда" width={40} />
       </InlineField>
       <InlineField
-        label="Maximum records"
+        label="Максимум записей"
         labelWidth={20}
-        tooltip={`Maximum number of records to return (1–${MAX_QUERY_LIMIT.toLocaleString()}). Leave blank to omit the limit.`}
+        tooltip={`Максимальное число возвращаемых записей (1–${MAX_QUERY_LIMIT.toLocaleString('ru-RU')}). Оставьте поле пустым, чтобы не задавать ограничение.`}
       >
         <Input
-          aria-label="Maximum records"
+          aria-label="Максимум записей"
           type="number"
           min={1}
           max={MAX_QUERY_LIMIT}
@@ -168,9 +168,9 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
           width={20}
         />
       </InlineField>
-      <InlineField label="Marketplace API" labelWidth={20}>
+      <InlineField label="API маркетплейса" labelWidth={20}>
         <Select
-          aria-label="Marketplace API"
+          aria-label="API маркетплейса"
           options={MARKETPLACE_ROUTES}
           value={MARKETPLACE_ROUTES.find((route) => route.value === query.marketplace)}
           onChange={(option) => {
@@ -183,9 +183,9 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
       </InlineField>
       {!isMetricsQuery && (
         <>
-          <InlineField label="Method" labelWidth={20}>
+          <InlineField label="Метод" labelWidth={20}>
             <Select
-              aria-label="HTTP method"
+              aria-label="Метод HTTP"
               options={METHODS}
               value={METHODS.find((method) => method.value === query.method)}
               onChange={(option) => {
@@ -196,18 +196,22 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
               width={12}
             />
           </InlineField>
-          <InlineField label="API path" labelWidth={20} tooltip="Relative path on the selected API host; must start with /.">
+          <InlineField
+            label="Путь API"
+            labelWidth={20}
+            tooltip="Относительный путь на выбранном API-хосте; должен начинаться с /."
+          >
             <Input
-              aria-label="API path"
+              aria-label="Путь API"
               value={query.path ?? ''}
               onChange={onPathChange}
               placeholder="/api/..."
               width={60}
             />
           </InlineField>
-          <InlineField label="JSON body" labelWidth={20} tooltip="Used for POST requests.">
+          <InlineField label="Тело запроса JSON" labelWidth={20} tooltip="Используется для запросов POST.">
             <TextArea
-              aria-label="JSON body"
+              aria-label="Тело запроса JSON"
               value={query.body ?? ''}
               onChange={onBodyChange}
               placeholder='{"key":"value"}'

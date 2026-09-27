@@ -26,6 +26,7 @@ import (
 const maxResponseBytes = 5 << 20
 const maxRequestBytes = 1 << 20
 const maxQueryLimit = 100_000
+const ozonCommissionUnavailableMessage = "Данные о комиссии Ozon недоступны в текущей версии поставщика данных."
 
 var (
 	httpStatusPattern = regexp.MustCompile(`HTTP ([0-9]{3})`)
@@ -129,7 +130,7 @@ func (d *Datasource) querySafely(ctx context.Context, query backend.DataQuery) (
 		if recovered := recover(); recovered != nil {
 			log.Printf("marketplace query panic refID=%q marketplace=%q query_type=%q error=unexpected query failure",
 				d.sanitizeString(query.RefID), safeQueryMarketplace(model.Marketplace), safeQueryType(model.QueryType))
-			response = backend.ErrDataResponse(backend.StatusInternal, "marketplace query failed unexpectedly")
+			response = backend.ErrDataResponse(backend.StatusInternal, "Не удалось выполнить запрос к маркетплейсу.")
 		}
 	}()
 	return d.query(ctx, query)
@@ -138,25 +139,25 @@ func (d *Datasource) querySafely(ctx context.Context, query backend.DataQuery) (
 func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend.DataResponse {
 	var model queryModel
 	if err := json.Unmarshal(query.JSON, &model); err != nil {
-		return backend.ErrDataResponse(backend.StatusBadRequest, "invalid query JSON")
+		return backend.ErrDataResponse(backend.StatusBadRequest, "Некорректный формат запроса.")
 	}
 	if model.QueryType == "" {
 		model.QueryType = "profitability"
 	}
 	if !isSupportedQueryType(model.QueryType) {
-		return backend.ErrDataResponse(backend.StatusBadRequest, "unknown query type")
+		return backend.ErrDataResponse(backend.StatusBadRequest, "Неизвестный тип запроса.")
 	}
 	if model.QueryType == "alert" && !isSupportedAlertMetric(model.AlertMetric) {
-		return backend.ErrDataResponse(backend.StatusBadRequest, "unknown alert metric")
+		return backend.ErrDataResponse(backend.StatusBadRequest, "Неизвестная метрика оповещения.")
 	}
 	if model.QueryType == "alert" && model.Marketplace != "metrics" {
-		return backend.ErrDataResponse(backend.StatusBadRequest, "alert queries require the metrics marketplace")
+		return backend.ErrDataResponse(backend.StatusBadRequest, "Запрос метрики оповещения требует выбора метрик маркетплейсов.")
 	}
 	if model.Limit != nil && (*model.Limit < 1 || *model.Limit > maxQueryLimit) {
-		return backend.ErrDataResponse(backend.StatusBadRequest, "maximum records must be between 1 and 100000")
+		return backend.ErrDataResponse(backend.StatusBadRequest, "Максимум записей должен быть от 1 до 100000.")
 	}
 	if len(model.Categories) > 0 {
-		return backend.ErrDataResponse(backend.StatusBadRequest, "category filters are not supported by the marketplace providers")
+		return backend.ErrDataResponse(backend.StatusBadRequest, "Фильтры по категориям пока не поддерживаются поставщиками данных маркетплейсов.")
 	}
 
 	if model.Marketplace == "metrics" {
@@ -211,6 +212,15 @@ func metricsDataResponse(query backend.DataQuery, result marketplace.CollectionR
 		productFrame.Fields[16].Append(product.UpdatedAt)
 	}
 	productFrame.RefID = query.RefID
+	setFrameDisplayNames(productFrame, map[string]string{
+		"marketplace": "Маркетплейс", "productId": "ID товара", "marketplaceProductId": "ID товара на маркетплейсе",
+		"sellerSku": "Артикул продавца (SKU)", "normalizedSellerSku": "Нормализованный артикул продавца",
+		"name": "Название товара", "variantId": "ID варианта", "variantName": "Название варианта",
+		"currentPrice": "Текущая цена", "commission": "Комиссия", "commissionRatePercent": "Ставка комиссии (%)",
+		"logisticsCost": "Расходы на логистику", "storageCost": "Расходы на хранение",
+		"costPrice": "Себестоимость", "netMargin": "Чистая маржа", "netMarginPercent": "Чистая маржа (%)",
+		"updatedAt": "Обновлено",
+	})
 
 	mergedFrame := data.NewFrame(
 		"merged-products",
@@ -227,6 +237,9 @@ func metricsDataResponse(query backend.DataQuery, result marketplace.CollectionR
 		mergedFrame.Fields[1].Append(string(offers))
 	}
 	mergedFrame.RefID = query.RefID
+	setFrameDisplayNames(mergedFrame, map[string]string{
+		"sellerSku": "Артикул продавца (SKU)", "offers": "Предложения маркетплейсов (JSON)",
+	})
 
 	statusFrame := providerStatusFrame(query.RefID, result.Providers)
 
@@ -246,9 +259,13 @@ func metricsDataResponse(query backend.DataQuery, result marketplace.CollectionR
 		warningFrame.Fields[0].Append(warning.SellerSKU)
 		warningFrame.Fields[1].Append(string(warning.Marketplace))
 		warningFrame.Fields[2].Append(string(productIDs))
-		warningFrame.Fields[3].Append(warning.Reason)
+		warningFrame.Fields[3].Append(mergeWarningDisplayReason(warning.Reason))
 	}
 	warningFrame.RefID = query.RefID
+	setFrameDisplayNames(warningFrame, map[string]string{
+		"sellerSku": "Артикул продавца (SKU)", "marketplace": "Маркетплейс",
+		"productIds": "ID товаров", "reason": "Причина",
+	})
 
 	response := backend.DataResponse{Frames: data.Frames{productFrame, mergedFrame, statusFrame, warningFrame}, Status: backend.StatusOK}
 	response.Error = err
@@ -258,7 +275,7 @@ func metricsDataResponse(query backend.DataQuery, result marketplace.CollectionR
 func (d *Datasource) queryRaw(ctx context.Context, query backend.DataQuery, model queryModel) backend.DataResponse {
 	route, ok := marketplaceRoutes[model.Marketplace]
 	if !ok {
-		return backend.ErrDataResponse(backend.StatusBadRequest, "unknown marketplace route")
+		return backend.ErrDataResponse(backend.StatusBadRequest, "Неизвестный API-маршрут маркетплейса.")
 	}
 	requestPath, err := validateRequestPath(model.Path)
 	if err != nil {
@@ -266,10 +283,10 @@ func (d *Datasource) queryRaw(ctx context.Context, query backend.DataQuery, mode
 	}
 	method := strings.ToUpper(model.Method)
 	if method != http.MethodGet && method != http.MethodPost {
-		return backend.ErrDataResponse(backend.StatusBadRequest, "method must be GET or POST")
+		return backend.ErrDataResponse(backend.StatusBadRequest, "Допустимые методы запроса: GET и POST.")
 	}
 	if len(model.Body) > maxRequestBytes {
-		return backend.ErrDataResponse(backend.StatusBadRequest, "request body exceeds 1 MiB")
+		return backend.ErrDataResponse(backend.StatusBadRequest, "Размер тела запроса превышает 1 МиБ.")
 	}
 	if err := d.validateCredentials(model.Marketplace); err != nil {
 		return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
@@ -282,7 +299,7 @@ func (d *Datasource) queryRaw(ctx context.Context, query backend.DataQuery, mode
 	}
 	request, err := http.NewRequestWithContext(ctx, method, targetURL, body)
 	if err != nil {
-		return backend.ErrDataResponse(backend.StatusBadRequest, "could not create marketplace request")
+		return backend.ErrDataResponse(backend.StatusBadRequest, "Не удалось сформировать запрос к маркетплейсу.")
 	}
 	d.applyCredentials(request, model.Marketplace)
 	if method == http.MethodPost && model.Body != "" {
@@ -291,27 +308,27 @@ func (d *Datasource) queryRaw(ctx context.Context, query backend.DataQuery, mode
 
 	upstreamResponse, err := d.client.Do(request)
 	if err != nil {
-		return backend.ErrDataResponse(backend.StatusInternal, "marketplace request failed")
+		return backend.ErrDataResponse(backend.StatusInternal, "Не удалось выполнить запрос к маркетплейсу.")
 	}
 	defer upstreamResponse.Body.Close()
 	if upstreamResponse.StatusCode == http.StatusUnauthorized {
-		return backend.ErrDataResponse(backend.StatusUnauthorized, "Marketplace credentials are invalid or expired. Update them in datasource settings.")
+		return backend.ErrDataResponse(backend.StatusUnauthorized, "Учётные данные маркетплейса неверны или устарели. Обновите их в настройках источника данных.")
 	}
 	if upstreamResponse.StatusCode == http.StatusTooManyRequests {
-		return backend.ErrDataResponse(backend.StatusTooManyRequests, "marketplace API rate limit exceeded")
+		return backend.ErrDataResponse(backend.StatusTooManyRequests, "Превышен лимит запросов к API маркетплейса.")
 	}
 
 	responseBody, err := io.ReadAll(io.LimitReader(upstreamResponse.Body, maxResponseBytes+1))
 	if err != nil {
-		return backend.ErrDataResponse(backend.StatusInternal, "could not read marketplace response")
+		return backend.ErrDataResponse(backend.StatusInternal, "Не удалось прочитать ответ маркетплейса.")
 	}
 	if len(responseBody) > maxResponseBytes {
-		return backend.ErrDataResponse(backend.StatusInternal, "marketplace response exceeds 5 MiB")
+		return backend.ErrDataResponse(backend.StatusInternal, "Размер ответа маркетплейса превышает 5 МиБ.")
 	}
 	if upstreamResponse.StatusCode < http.StatusOK || upstreamResponse.StatusCode >= http.StatusMultipleChoices {
 		return backend.ErrDataResponse(
 			backend.StatusInternal,
-			fmt.Sprintf("marketplace API returned HTTP %d", upstreamResponse.StatusCode),
+			fmt.Sprintf("API маркетплейса вернул код HTTP %d.", upstreamResponse.StatusCode),
 		)
 	}
 
@@ -322,6 +339,9 @@ func (d *Datasource) queryRaw(ctx context.Context, query backend.DataQuery, mode
 		data.NewField("response", nil, []string{d.sanitizeString(string(responseBody))}),
 	)
 	frame.RefID = query.RefID
+	setFrameDisplayNames(frame, map[string]string{
+		"marketplace": "Маркетплейс", "status": "Код ответа HTTP", "response": "Ответ API (JSON)",
+	})
 	return backend.DataResponse{Frames: data.Frames{frame}, Status: backend.StatusOK}
 }
 
@@ -416,7 +436,7 @@ func (d *Datasource) queryMetrics(ctx context.Context, query backend.DataQuery, 
 			status := &result.Providers[index]
 			if status.Marketplace == marketplace.Ozon && status.Error == "" {
 				status.State = marketplace.ProviderPartial
-				status.Error = "Ozon commission data is not available from the current provider"
+				status.Error = ozonCommissionUnavailableMessage
 			}
 		}
 	}
@@ -538,6 +558,12 @@ func metricsQueryDataResponse(query backend.DataQuery, queryType, alertMetric st
 		}
 	}
 	frame.RefID = query.RefID
+	setFrameDisplayNames(frame, map[string]string{
+		"marketplace": "Маркетплейс", "productId": "ID товара", "marketplaceProductId": "ID товара на маркетплейсе",
+		"sellerSku": "Артикул продавца (SKU)", "variantId": "ID варианта", "variantName": "Название варианта",
+		"currentPrice": "Текущая цена", "updatedAt": "Обновлено", "commission": "Комиссия",
+		"commissionRatePercent": "Ставка комиссии (%)",
+	})
 	status := providerStatusFrame(query.RefID, result.Providers)
 	return backend.DataResponse{Frames: data.Frames{frame, status}, Status: backend.StatusOK}
 }
@@ -563,17 +589,26 @@ func alertDataResponse(query backend.DataQuery, metric string, products []market
 		fieldConfig := &data.FieldConfig{}
 		switch metric {
 		case "netMarginPercent":
-			fieldConfig.DisplayNameFromDS = "Net Margin (%)"
+			fieldConfig.DisplayNameFromDS = "Чистая маржа (%)"
 			fieldConfig.Unit = "percent"
 		case "netMarginRUB":
-			fieldConfig.DisplayNameFromDS = "Net Margin (RUB)"
+			fieldConfig.DisplayNameFromDS = "Чистая маржа (₽)"
 			fieldConfig.Unit = "currencyRUB"
+		case "commissionIncreasePercent":
+			fieldConfig.DisplayNameFromDS = "Рост комиссии (%)"
+		case "competitorPriceDiffPercent":
+			fieldConfig.DisplayNameFromDS = "Разница с ценой конкурента (%)"
+		case "storageCostToRevenuePercent":
+			fieldConfig.DisplayNameFromDS = "Расходы на хранение / выручка (%)"
+		default:
+			fieldConfig.DisplayNameFromDS = "Значение"
 		}
 		field.SetConfig(fieldConfig)
 		frame := data.NewFrame("marketplace-alert",
 			data.NewField("time", nil, []time.Time{product.UpdatedAt.UTC()}),
 			field,
 		)
+		setFrameDisplayNames(frame, map[string]string{"time": "Время"})
 		frame.RefID = query.RefID
 		frames = append(frames, frame)
 	}
@@ -582,6 +617,7 @@ func alertDataResponse(query backend.DataQuery, metric string, products []market
 			data.NewField("time", nil, []time.Time{}),
 			data.NewField("value", data.Labels{}, []float64{}),
 		)
+		setFrameDisplayNames(frame, map[string]string{"time": "Время", "value": "Значение"})
 		frame.RefID = query.RefID
 		frames = append(frames, frame)
 	}
@@ -609,12 +645,43 @@ func providerStatusFrame(refID string, statuses []marketplace.ProviderStatus) *d
 	)
 	for _, status := range statuses {
 		frame.Fields[0].Append(string(status.Marketplace))
-		frame.Fields[1].Append(string(status.State))
+		frame.Fields[1].Append(providerStateDisplayName(status.State))
 		frame.Fields[2].Append(int64(status.ProductCount))
 		frame.Fields[3].Append(status.Error)
 	}
 	frame.RefID = refID
+	setFrameDisplayNames(frame, map[string]string{
+		"marketplace": "Маркетплейс", "state": "Состояние", "productCount": "Количество товаров", "error": "Сообщение",
+	})
 	return frame
+}
+
+func providerStateDisplayName(state marketplace.ProviderState) string {
+	switch state {
+	case marketplace.ProviderAvailable:
+		return "Доступен"
+	case marketplace.ProviderNoData:
+		return "Нет данных"
+	case marketplace.ProviderPartial:
+		return "Частичные данные"
+	case marketplace.ProviderUnavailable:
+		return "Недоступен"
+	case marketplace.ProviderCancelled:
+		return "Отменён"
+	default:
+		return string(state)
+	}
+}
+
+func mergeWarningDisplayReason(reason string) string {
+	switch reason {
+	case "missing_seller_sku":
+		return "Не указан артикул продавца (SKU)"
+	case "duplicate_seller_sku_in_marketplace":
+		return "Несколько товаров с одним артикулом на маркетплейсе"
+	default:
+		return reason
+	}
 }
 
 func (d *Datasource) queryHistory(ctx context.Context, query backend.DataQuery, model queryModel) backend.DataResponse {
@@ -649,7 +716,7 @@ func (d *Datasource) queryHistory(ctx context.Context, query backend.DataQuery, 
 			continue
 		}
 		if query.TimeRange.From.IsZero() || query.TimeRange.To.IsZero() || query.TimeRange.To.Before(query.TimeRange.From) {
-			return backend.ErrDataResponse(backend.StatusBadRequest, "history queries require a valid Grafana time range")
+			return backend.ErrDataResponse(backend.StatusBadRequest, "Для запроса истории укажите корректный период Grafana.")
 		}
 
 		var client ozonAnalyticsAPI
@@ -743,6 +810,9 @@ func historyDataResponse(query backend.DataQuery, rows []ozon.AnalyticsRow, stat
 		frame.Fields[2].Append(orderedUnits)
 	}
 	frame.RefID = query.RefID
+	setFrameDisplayNames(frame, map[string]string{
+		"day": "День", "revenue": "Выручка (₽)", "orderedUnits": "Заказано, шт.",
+	})
 	return backend.DataResponse{Frames: data.Frames{frame, providerStatusFrame(query.RefID, statuses)}, Status: backend.StatusOK}
 }
 
@@ -774,6 +844,7 @@ func providerDataAvailable(statuses []marketplace.ProviderStatus) bool {
 			return true
 		case marketplace.ProviderPartial:
 			if status.ProductCount > 0 ||
+				status.Error == ozonCommissionUnavailableMessage ||
 				status.Error == "Ozon commission data is not available from the current provider" {
 				return true
 			}
@@ -808,35 +879,36 @@ func attachProviderNotices(response *backend.DataResponse, statuses []marketplac
 }
 
 func safeProviderMessage(name marketplace.Marketplace, state marketplace.ProviderState, raw string) string {
-	label := "Marketplace"
+	label := "Маркетплейс"
 	if name == marketplace.Wildberries {
 		label = "Wildberries"
 	} else if name == marketplace.Ozon {
 		label = "Ozon"
 	}
 	if status := parsedHTTPStatus(raw); status == http.StatusUnauthorized {
-		return label + " credentials are invalid or expired. Update them in datasource settings."
+		return label + ": учётные данные неверны или устарели. Обновите их в настройках источника данных."
 	}
 	if status := parsedHTTPStatus(raw); status == http.StatusTooManyRequests {
-		return label + " API rate limit exceeded."
+		return label + ": превышен лимит запросов к API."
 	}
-	if raw == "Ozon commission data is not available from the current provider" {
-		return raw
+	if raw == "Ozon commission data is not available from the current provider" ||
+		raw == ozonCommissionUnavailableMessage {
+		return ozonCommissionUnavailableMessage
 	}
 	if strings.Contains(raw, "price history requires product and upload IDs") {
-		return "Wildberries price history requires product and upload IDs, which are not available in this query."
+		return "История цен Wildberries требует ID товара и загрузки, которые не передаются в этом запросе."
 	}
 	if strings.Contains(strings.ToLower(raw), "configure ") ||
 		strings.Contains(strings.ToLower(raw), "not configured") {
-		return label + " is not configured. Update datasource settings."
+		return label + " не настроен. Проверьте параметры источника данных."
 	}
 	switch state {
 	case marketplace.ProviderPartial:
-		return label + " returned partial data; some values may be missing."
+		return label + ": получены не все данные, некоторые значения могут отсутствовать."
 	case marketplace.ProviderUnavailable:
-		return label + " data is unavailable."
+		return label + ": данные недоступны."
 	case marketplace.ProviderCancelled:
-		return label + " request was cancelled."
+		return label + ": запрос отменён."
 	default:
 		return ""
 	}
@@ -851,9 +923,9 @@ func failureResponseMessage(statuses []marketplace.ProviderStatus) string {
 		}
 	}
 	if len(messages) == 0 {
-		return "No marketplace data is available."
+		return "Данные маркетплейсов недоступны."
 	}
-	return "No marketplace data is available. " + strings.Join(messages, " ")
+	return "Данные маркетплейсов недоступны. " + strings.Join(messages, " ")
 }
 
 func parsedHTTPStatus(raw string) int {
@@ -950,15 +1022,15 @@ func (d *Datasource) sanitizeProducts(products []marketplace.ProductMetrics) []m
 
 func validateRequestPath(value string) (string, error) {
 	if value == "" || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") {
-		return "", fmt.Errorf("API path must be an absolute path beginning with one slash")
+		return "", fmt.Errorf("путь API должен начинаться с одной косой черты")
 	}
 	parsed, err := url.ParseRequestURI(value)
 	if err != nil || parsed.IsAbs() || parsed.Host != "" || !strings.HasPrefix(parsed.Path, "/") {
-		return "", fmt.Errorf("API path must be relative to the selected marketplace host")
+		return "", fmt.Errorf("путь API должен быть относительным для выбранного API-хоста")
 	}
 	for _, segment := range strings.Split(parsed.Path, "/") {
 		if segment == ".." {
-			return "", fmt.Errorf("API path cannot contain parent-directory segments")
+			return "", fmt.Errorf("путь API не может содержать сегменты перехода к родительскому каталогу")
 		}
 	}
 	return parsed.String(), nil
@@ -987,12 +1059,12 @@ func (d *Datasource) CheckHealth(ctx context.Context, _ *backend.CheckHealthRequ
 		if !result.OK {
 			return &backend.CheckHealthResult{
 				Status:  backend.HealthStatusError,
-				Message: result.Marketplace + ": " + result.Message,
+				Message: displayMarketplaceName(result.Marketplace) + ": " + result.Message,
 			}, nil
 		}
 	}
 	return &backend.CheckHealthResult{
 		Status:  backend.HealthStatusOk,
-		Message: "Marketplace connection successful",
+		Message: "Подключение к маркетплейсу работает.",
 	}, nil
 }
