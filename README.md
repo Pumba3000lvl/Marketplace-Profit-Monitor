@@ -42,6 +42,26 @@ It uses a 30-second HTTP timeout, sends the API key in the `Authorization` heade
 
 `GetPriceHistory(ctx, nmID, dateFrom, dateTo)` currently returns `ErrUploadTaskEnumerationUnsupported`. Wildberries' processed-history endpoints (`GET /api/v2/history/tasks` and `GET /api/v2/history/goods/task`) both require an `uploadID`, and the API does not expose an operation to enumerate those IDs. `GetPriceHistoryForUploads` can retrieve and filter price points when the caller already has the upload IDs. Those points represent changes submitted through the Wildberries API only; changes made manually in the seller cabinet are not available through these endpoints and are not included.
 
+### Calculating net margin
+
+`CalculateNetMargin` accepts monetary amounts as integer kopecks and returns a net margin, display percentage, and dashboard-ready expense breakdown. Pass commission as integer basis points (`100` = 1%, `10_000` = 100%). The optional ad cost defaults to zero; a zero cost price omits cost of goods. Commission is rounded to the nearest kopeck, with half-kopeck amounts rounded up. The margin percentage is calculated from the final integer amounts as `float64` for display only.
+
+```go
+result, err := wildberries.CalculateNetMargin(wildberries.MarginInput{
+    SalePriceKopecks:      10_000, // 100 RUB
+    CommissionBasisPoints: 1_500,  // 15%
+    LogisticsCostKopecks:  500,
+    StorageCostKopecks:    100,
+    CostPriceKopecks:      3_000,
+    AdCostKopecks:         200,
+})
+if err != nil {
+    return err
+}
+fmt.Printf("margin: %d kopecks (%.2f%%), expenses: %d kopecks\n",
+    result.NetMarginKopecks, result.NetMarginPercent, result.TotalExpensesKopecks)
+```
+
 Grafana data is stored in the `grafana-data` named volume. To stop Grafana:
 
 ```sh
