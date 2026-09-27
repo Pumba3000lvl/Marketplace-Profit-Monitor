@@ -46,6 +46,27 @@ func TestMarketplaceRoutesUseExpectedAPIHosts(t *testing.T) {
 	}
 }
 
+func TestQueryModelReadsEditorOptions(t *testing.T) {
+	var model queryModel
+	err := json.Unmarshal([]byte(`{
+		"marketplace":"metrics",
+		"selectedMarketplace":"both",
+		"queryType":"profitability",
+		"categories":["wb:electronics","ozon:electronics"],
+		"limit":1000,
+		"path":"/metrics",
+		"method":"GET"
+	}`), &model)
+	if err != nil {
+		t.Fatalf("decode query model: %v", err)
+	}
+	if model.SelectedMarketplace != "both" || model.QueryType != "profitability" ||
+		len(model.Categories) != 2 || model.Categories[0] != "wb:electronics" ||
+		model.Categories[1] != "ozon:electronics" || model.Limit == nil || *model.Limit != 1000 {
+		t.Fatalf("query model editor options = %+v, want marketplace/type/categories/limit preserved", model)
+	}
+}
+
 func TestMetricsQueryReturnsProductStatusAndWarningFrames(t *testing.T) {
 	query := backend.DataQuery{
 		RefID: "A",

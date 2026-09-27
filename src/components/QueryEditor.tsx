@@ -1,15 +1,28 @@
 import React, { ChangeEvent } from 'react';
-import { InlineField, Input, Select, Stack, TextArea } from '@grafana/ui';
-import { QueryEditorProps } from '@grafana/data';
+import { InlineField, Input, MultiSelect, Select, Stack, TextArea } from '@grafana/ui';
+import { QueryEditorProps, SelectableValue } from '@grafana/data';
 import { DataSource } from '../datasource';
 import {
+  MARKETPLACE_CATEGORY_OPTIONS,
+  MARKETPLACE_OPTIONS,
   MARKETPLACE_ROUTES,
+  MAX_QUERY_LIMIT,
   MarketplaceDataSourceOptions,
+  MarketplaceCategoryId,
+  MarketplaceQueryType,
   MarketplaceQuery,
+  MarketplaceSelection,
+  QUERY_TYPE_OPTIONS,
   RequestMethod,
 } from '../types';
 
-type Props = QueryEditorProps<DataSource, MarketplaceQuery, MarketplaceDataSourceOptions>;
+export type Props = QueryEditorProps<DataSource, MarketplaceQuery, MarketplaceDataSourceOptions>;
+const MARKETPLACE_SELECT_OPTIONS: Array<SelectableValue<MarketplaceSelection>> = MARKETPLACE_OPTIONS.map(
+  ({ label, value }) => ({ label, value })
+);
+const QUERY_TYPE_SELECT_OPTIONS: Array<SelectableValue<MarketplaceQueryType>> = QUERY_TYPE_OPTIONS.map(
+  ({ label, value }) => ({ label, value })
+);
 const METHODS = [
   { label: 'GET', value: 'GET' as RequestMethod },
   { label: 'POST', value: 'POST' as RequestMethod },
@@ -17,6 +30,11 @@ const METHODS = [
 
 export function QueryEditor({ query, onChange, onRunQuery }: Props) {
   const isMetricsQuery = query.marketplace === 'metrics';
+  const selectedMarketplace = query.selectedMarketplace ?? 'both';
+  const categories = query.categories ?? [];
+  const categoryOptions: Array<SelectableValue<MarketplaceCategoryId>> =
+    MARKETPLACE_CATEGORY_OPTIONS[selectedMarketplace].map(({ label, value }) => ({ label, value }));
+
   const update = (values: Partial<MarketplaceQuery>, runQuery = false) => {
     onChange({ ...query, ...values });
     if (runQuery) {
@@ -24,11 +42,107 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
     }
   };
 
-  const onPathChange = (event: ChangeEvent<HTMLInputElement>) => update({ path: event.target.value });
-  const onBodyChange = (event: ChangeEvent<HTMLTextAreaElement>) => update({ body: event.target.value });
+  const onMarketplaceChange = (option: SelectableValue<MarketplaceSelection>) => {
+    if (!option.value) {
+      return;
+    }
+    const availableCategories = new Set(
+      MARKETPLACE_CATEGORY_OPTIONS[option.value].map((category) => category.value)
+    );
+    update(
+      {
+        selectedMarketplace: option.value,
+        categories: categories.filter((category) => availableCategories.has(category)),
+      },
+      true
+    );
+  };
+
+  const onLimitChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const value = event.target.value;
+
+    if (value.trim() === '') {
+      update({ limit: undefined });
+      return;
+    }
+
+    const parsedLimit = Number(value);
+    if (!Number.isSafeInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > MAX_QUERY_LIMIT) {
+      onChange({ ...query });
+      return;
+    }
+
+    update({ limit: parsedLimit }, true);
+  };
+
+  const onPathChange = (event: ChangeEvent<HTMLInputElement>) => update({ path: event.target.value }, true);
+  const onBodyChange = (event: ChangeEvent<HTMLTextAreaElement>) => update({ body: event.target.value }, true);
 
   return (
     <Stack gap={1}>
+      <InlineField label="Marketplace" labelWidth={20}>
+        <Select<MarketplaceSelection>
+          aria-label="Marketplace"
+          options={MARKETPLACE_SELECT_OPTIONS}
+          value={MARKETPLACE_SELECT_OPTIONS.find((option) => option.value === selectedMarketplace)}
+          onChange={onMarketplaceChange}
+          width={40}
+        />
+      </InlineField>
+      <InlineField label="Query type" labelWidth={20}>
+        <Select<MarketplaceQueryType>
+          aria-label="Query type"
+          options={QUERY_TYPE_SELECT_OPTIONS}
+          value={QUERY_TYPE_SELECT_OPTIONS.find((option) => option.value === (query.queryType ?? 'profitability'))}
+          onChange={(option) => {
+            if (option.value) {
+              update({ queryType: option.value }, true);
+            }
+          }}
+          width={40}
+        />
+      </InlineField>
+      <InlineField
+        label="Categories"
+        labelWidth={20}
+        tooltip="Static category groups are namespaced by marketplace, so Wildberries and Ozon categories remain distinct."
+      >
+        <MultiSelect
+          aria-label="Categories"
+          options={categoryOptions}
+          value={categoryOptions.filter((option) => option.value !== undefined && categories.includes(option.value))}
+          onChange={(options) =>
+            update(
+              { categories: (options ?? []).flatMap((option) => (option.value ? [option.value] : [])) },
+              true
+            )
+          }
+          width={40}
+        />
+      </InlineField>
+      <InlineField
+        label="Time range"
+        labelWidth={20}
+        tooltip="The query uses the time range selected in Grafana's dashboard toolbar."
+      >
+        <Input aria-label="Grafana dashboard time range" disabled value="Uses dashboard time range" width={40} />
+      </InlineField>
+      <InlineField
+        label="Maximum records"
+        labelWidth={20}
+        tooltip={`Maximum number of records to return (1–${MAX_QUERY_LIMIT.toLocaleString()}). Leave blank to omit the limit.`}
+      >
+        <Input
+          aria-label="Maximum records"
+          type="number"
+          min={1}
+          max={MAX_QUERY_LIMIT}
+          step={1}
+          value={query.limit?.toString() ?? ''}
+          onChange={onLimitChange}
+          width={20}
+        />
+      </InlineField>
       <InlineField label="Marketplace API" labelWidth={20}>
         <Select
           aria-label="Marketplace API"
@@ -62,7 +176,6 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
               aria-label="API path"
               value={query.path ?? ''}
               onChange={onPathChange}
-              onBlur={() => onRunQuery()}
               placeholder="/api/..."
               width={60}
             />
@@ -72,7 +185,6 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
               aria-label="JSON body"
               value={query.body ?? ''}
               onChange={onBodyChange}
-              onBlur={() => onRunQuery()}
               placeholder='{"key":"value"}'
               rows={4}
               width={60}

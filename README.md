@@ -19,7 +19,7 @@ docker compose up -d
 
 Open [http://localhost:3000](http://localhost:3000) and sign in with Grafana's initial local-development credentials, `admin` / `admin`. Add **Marketplace Profit Monitor** under **Connections → Data sources**, configure the API credentials you need, and select **Save & test**. The health check verifies that at least one supported credential is configured; it does not call a marketplace API.
 
-The query editor lets you select a route, HTTP method, relative API path, and optional JSON request body. Paths must start with `/` and are appended to the selected marketplace API host. Successful requests are returned as a table with the route, HTTP status, and raw JSON response. Use the official marketplace API documentation to choose supported paths and request bodies:
+The query editor exposes marketplace and query-type selectors, marketplace-scoped category filters, Grafana's dashboard time range, and a bounded record limit. The raw API controls remain available for direct seller API requests: choose a route, HTTP method, relative API path, and optional JSON request body. Paths must start with `/` and are appended to the selected marketplace API host. Successful requests are returned as a table with the route, HTTP status, and raw JSON response. The backend currently executes the raw API route or unified metrics mode; applying query type, category, and record-limit filters to marketplace results remains future work. Use the official marketplace API documentation to choose supported paths and request bodies:
 
 - [Wildberries seller API](https://dev.wildberries.ru/)
 - [Ozon Seller API](https://docs.ozon.ru/api/seller/)

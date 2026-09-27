@@ -50,10 +50,14 @@ type Datasource struct {
 }
 
 type queryModel struct {
-	Marketplace string `json:"marketplace"`
-	Path        string `json:"path"`
-	Method      string `json:"method"`
-	Body        string `json:"body"`
+	Marketplace         string   `json:"marketplace"`
+	SelectedMarketplace string   `json:"selectedMarketplace"`
+	QueryType           string   `json:"queryType"`
+	Categories          []string `json:"categories"`
+	Limit               *int     `json:"limit"`
+	Path                string   `json:"path"`
+	Method              string   `json:"method"`
+	Body                string   `json:"body"`
 }
 
 func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
