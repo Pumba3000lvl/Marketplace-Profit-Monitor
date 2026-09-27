@@ -84,10 +84,13 @@ export const DEFAULT_QUERY: Partial<MarketplaceQuery> = {
   limit: 1000,
 };
 
-export interface MarketplaceDataSourceOptions extends DataSourceJsonData {}
+export interface MarketplaceDataSourceOptions extends DataSourceJsonData {
+  ozonClientId?: string;
+  telegramChatId?: string;
+}
 
 export interface MarketplaceSecureJsonData {
   wildberriesToken?: string;
-  ozonClientId?: string;
   ozonApiKey?: string;
+  telegramBotToken?: string;
 }

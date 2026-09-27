@@ -17,7 +17,9 @@ make build
 docker compose up -d
 ```
 
-Open [http://localhost:3000](http://localhost:3000) and sign in with Grafana's initial local-development credentials, `admin` / `admin`. Add **Marketplace Profit Monitor** under **Connections → Data sources**, configure the API credentials you need, and select **Save & test**. The health check verifies that at least one supported credential is configured; it does not call a marketplace API.
+Open [http://localhost:3000](http://localhost:3000) and sign in with Grafana's initial local-development credentials, `admin` / `admin`. Add **Marketplace Profit Monitor** under **Connections → Data sources** and configure the credentials you need. Wildberries API Key, Ozon API Key, and Telegram Bot Token are stored in Grafana's encrypted `secureJsonData`; Ozon Client-Id and Telegram Chat ID are stored in datasource `jsonData`. Save the data source before using **Test connection**; it probes only configured marketplaces through the plugin backend. Grafana's **Save & test** check also makes a read-only request to each configured marketplace.
+
+The Telegram fields only store alert credentials and a chat ID for future use; Telegram notifications are not implemented yet.
 
 The query editor exposes marketplace and query-type selectors, marketplace-scoped category filters, Grafana's dashboard time range, and a bounded record limit. The raw API controls remain available for direct seller API requests: choose a route, HTTP method, relative API path, and optional JSON request body. Paths must start with `/` and are appended to the selected marketplace API host. Successful requests are returned as a table with the route, HTTP status, and raw JSON response. The backend currently executes the raw API route or unified metrics mode; applying query type, category, and record-limit filters to marketplace results remains future work. Use the official marketplace API documentation to choose supported paths and request bodies:
 

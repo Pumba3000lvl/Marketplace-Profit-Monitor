@@ -67,7 +67,7 @@
       "headers": [
         {
           "name": "Client-Id",
-          "content": "{{ .SecureJsonData.ozonClientId }}"
+          "content": "{{ .JsonData.ozonClientId }}"
         },
         {
           "name": "Api-Key",

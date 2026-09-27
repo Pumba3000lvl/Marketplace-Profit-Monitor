@@ -34,19 +34,27 @@ var marketplaceRoutes = map[string]marketplaceRoute{
 }
 
 var (
-	_ backend.QueryDataHandler   = (*Datasource)(nil)
-	_ backend.CheckHealthHandler = (*Datasource)(nil)
+	_ backend.QueryDataHandler    = (*Datasource)(nil)
+	_ backend.CheckHealthHandler  = (*Datasource)(nil)
+	_ backend.CallResourceHandler = (*Datasource)(nil)
 )
 
 type credentials struct {
 	wildberriesToken string
 	ozonClientID     string
 	ozonAPIKey       string
+	telegramBotToken string
+}
+
+type datasourceJSONData struct {
+	OzonClientID   string `json:"ozonClientId"`
+	TelegramChatID string `json:"telegramChatId"`
 }
 
 type Datasource struct {
 	client      *http.Client
 	credentials credentials
+	jsonData    datasourceJSONData
 }
 
 type queryModel struct {
@@ -61,6 +69,12 @@ type queryModel struct {
 }
 
 func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
+	var jsonData datasourceJSONData
+	if len(settings.JSONData) > 0 {
+		if err := json.Unmarshal(settings.JSONData, &jsonData); err != nil {
+			return nil, fmt.Errorf("decode datasource settings: %w", err)
+		}
+	}
 	return &Datasource{
 		client: &http.Client{
 			Timeout: 30 * time.Second,
@@ -70,9 +84,11 @@ func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSetting
 		},
 		credentials: credentials{
 			wildberriesToken: settings.DecryptedSecureJSONData["wildberriesToken"],
-			ozonClientID:     settings.DecryptedSecureJSONData["ozonClientId"],
+			ozonClientID:     jsonData.OzonClientID,
 			ozonAPIKey:       settings.DecryptedSecureJSONData["ozonApiKey"],
+			telegramBotToken: settings.DecryptedSecureJSONData["telegramBotToken"],
 		},
+		jsonData: jsonData,
 	}, nil
 }
 
@@ -290,20 +306,6 @@ func validateRequestPath(value string) (string, error) {
 	return parsed.String(), nil
 }
 
-func (d *Datasource) validateCredentials(route string) error {
-	switch route {
-	case "wb-tariffs", "wb-prices":
-		if d.credentials.wildberriesToken == "" {
-			return fmt.Errorf("configure a Wildberries API token")
-		}
-	case "ozon":
-		if d.credentials.ozonClientID == "" || d.credentials.ozonAPIKey == "" {
-			return fmt.Errorf("configure both Ozon Client-Id and API key")
-		}
-	}
-	return nil
-}
-
 func (d *Datasource) applyCredentials(request *http.Request, route string) {
 	switch route {
 	case "wb-tariffs", "wb-prices":
@@ -314,15 +316,25 @@ func (d *Datasource) applyCredentials(request *http.Request, route string) {
 	}
 }
 
-func (d *Datasource) CheckHealth(_ context.Context, _ *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
-	if d.credentials.wildberriesToken == "" && (d.credentials.ozonClientID == "" || d.credentials.ozonAPIKey == "") {
+func (d *Datasource) CheckHealth(ctx context.Context, _ *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
+	marketplaces, err := d.configuredMarketplaces()
+	if err != nil {
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
-			Message: "Configure a Wildberries token or both Ozon credentials",
+			Message: err.Error(),
 		}, nil
+	}
+	results := d.testConnections(ctx, marketplaces)
+	for _, result := range results {
+		if !result.OK {
+			return &backend.CheckHealthResult{
+				Status:  backend.HealthStatusError,
+				Message: result.Marketplace + ": " + result.Message,
+			}, nil
+		}
 	}
 	return &backend.CheckHealthResult{
 		Status:  backend.HealthStatusOk,
-		Message: "Marketplace credentials are configured",
+		Message: "Marketplace connection successful",
 	}, nil
 }
