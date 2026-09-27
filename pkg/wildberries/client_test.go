@@ -44,11 +44,17 @@ func TestNewClientAndRequestLoggingDoNotExposeAPIKey(t *testing.T) {
 	if _, err := client.GetProducts(context.Background(), 10, 0); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := client.GetProducts(context.Background(), 10, 0); err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(logOutput.String(), token) {
 		t.Fatalf("request logs leaked API key: %s", logOutput.String())
 	}
 	if !strings.Contains(logOutput.String(), "method=GET path=/api/v2/list/goods/filter status=200") {
 		t.Fatalf("request log missing safe request metadata: %s", logOutput.String())
+	}
+	if !strings.Contains(logOutput.String(), "wildberries cache result=hit type=products") {
+		t.Fatalf("cache hit not logged: %s", logOutput.String())
 	}
 }
 
@@ -320,5 +326,93 @@ func TestGetUploadTaskBuildsQueryAndDecodesTask(t *testing.T) {
 	}
 	if task.Status != 3 || task.UploadID != wantID || task.ActivationDate == nil || !task.ActivationDate.Equal(activation) {
 		t.Fatalf("unexpected task metadata: %#v", task)
+	}
+}
+
+func TestClientCachesByShopCredentialTypeAndQueryAndSupportsRefresh(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		switch r.URL.Path {
+		case "/api/v2/list/goods/filter":
+			_, _ = fmt.Fprintf(w, `{"data":{"listGoods":[{"nmID":1,"vendorCode":%q}]}}`, r.URL.Query().Get("limit"))
+		case "/api/v1/tariffs/commission":
+			_, _ = w.Write([]byte(`{"report":[{"subjectID":9}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cache := NewMemoryCache()
+	defer cache.Close()
+	client := testClient(server, "key-1")
+	client.cache = cache
+	client.shopID = "shop-a"
+	sharedClient := testClient(server, "key-1")
+	sharedClient.cache = cache
+	sharedClient.shopID = "shop-a"
+	otherShop := testClient(server, "key-1")
+	otherShop.cache = cache
+	otherShop.shopID = "shop-b"
+
+	assertProduct := func(c *Client, limit int, wantVendorCode string) {
+		t.Helper()
+		products, err := c.GetProducts(context.Background(), limit, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(products) != 1 || products[0].VendorCode != wantVendorCode {
+			t.Fatalf("GetProducts() = %#v, want vendorCode %q", products, wantVendorCode)
+		}
+	}
+	assertProduct(client, 10, "10")
+	assertProduct(client, 10, "10")
+	assertProduct(sharedClient, 10, "10")
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("same-shop cache request count = %d, want 1", got)
+	}
+
+	assertProduct(otherShop, 10, "10")
+	assertProduct(client, 11, "11")
+	if _, err := client.GetCommissions(context.Background(), "en"); err != nil {
+		t.Fatal(err)
+	}
+	if got := requests.Load(); got != 4 {
+		t.Fatalf("isolated cache request count = %d, want 4", got)
+	}
+
+	client.SetAPIKey("key-2")
+	assertProduct(client, 10, "10")
+	client.InvalidateCache()
+	assertProduct(client, 10, "10")
+	if got := requests.Load(); got != 6 {
+		t.Fatalf("credential rotation/manual refresh request count = %d, want 6", got)
+	}
+	if got := cache.Metrics().ByType["products"].Hits; got < 2 {
+		t.Fatalf("product cache hits = %d, want at least 2", got)
+	}
+}
+
+func TestClientDoesNotCacheAPIErrors(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"listGoods":[]}}`))
+	}))
+	defer server.Close()
+
+	client := testClient(server, "key")
+	if _, err := client.GetProducts(context.Background(), 1, 0); err == nil {
+		t.Fatal("GetProducts() succeeded on unauthorized response")
+	}
+	if _, err := client.GetProducts(context.Background(), 1, 0); err != nil {
+		t.Fatalf("GetProducts() after unauthorized response failed: %v", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("API request count = %d, want 2 (errors must not be cached)", got)
 	}
 }

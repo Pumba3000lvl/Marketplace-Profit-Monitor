@@ -3,6 +3,8 @@ package wildberries
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -32,10 +35,14 @@ var ErrUploadTaskEnumerationUnsupported = errors.New("Wildberries API does not s
 
 // Client accesses selected Wildberries Seller API endpoints.
 type Client struct {
+	apiKeyMu   sync.RWMutex
 	apiKey     string
 	httpClient *http.Client
 	logger     *log.Logger
 	sleep      func(context.Context, time.Duration) error
+	cache      Cache
+	shopID     string
+	ownsCache  bool
 
 	commonBaseURL string
 	pricesBaseURL string
@@ -45,6 +52,23 @@ type Client struct {
 // NewClient creates a Wildberries Seller API client using apiKey for
 // Authorization. Requests have a 30-second timeout.
 func NewClient(apiKey string) *Client {
+	return newClient(apiKey, "default", NewMemoryCache(), true)
+}
+
+// NewClientWithCache creates a client scoped to shopID using the supplied
+// cache. The caller retains ownership of cache and should close it at shutdown.
+func NewClientWithCache(apiKey, shopID string, cache Cache) *Client {
+	if cache == nil {
+		cache = NewMemoryCache()
+		return newClient(apiKey, shopID, cache, true)
+	}
+	return newClient(apiKey, shopID, cache, false)
+}
+
+func newClient(apiKey, shopID string, cache Cache, ownsCache bool) *Client {
+	if shopID == "" {
+		shopID = "default"
+	}
 	return &Client{
 		apiKey: apiKey,
 		httpClient: &http.Client{
@@ -56,10 +80,57 @@ func NewClient(apiKey string) *Client {
 		},
 		logger:        log.Default(),
 		sleep:         sleepContext,
+		cache:         cache,
+		shopID:        shopID,
+		ownsCache:     ownsCache,
 		commonBaseURL: commonAPIBaseURL,
 		pricesBaseURL: pricesAPIBaseURL,
 		pageSize:      maxPageSize,
 	}
+}
+
+// SetAPIKey replaces the seller credential and invalidates this shop's cache.
+// Cache keys contain only a one-way fingerprint of the credential.
+func (c *Client) SetAPIKey(apiKey string) {
+	c.apiKeyMu.Lock()
+	if c.apiKey == apiKey {
+		c.apiKeyMu.Unlock()
+		return
+	}
+	c.apiKey = apiKey
+	c.apiKeyMu.Unlock()
+	c.cache.InvalidatePrefix(cacheShopScopePrefix(c.shopID))
+}
+
+// InvalidateCache clears all cached Wildberries data for this shop. Call it
+// when the caller initiates a manual refresh.
+func (c *Client) InvalidateCache() {
+	c.cache.InvalidatePrefix(cacheShopScopePrefix(c.shopID))
+}
+
+// CacheMetrics returns process-local hit/miss counts and rates.
+func (c *Client) CacheMetrics() CacheMetricsSnapshot {
+	return c.cache.Metrics()
+}
+
+// Close gracefully stops timers for a cache created by NewClient. A cache
+// passed to NewClientWithCache remains the caller's responsibility.
+func (c *Client) Close() error {
+	if c.ownsCache {
+		return c.cache.Close()
+	}
+	return nil
+}
+
+func (c *Client) apiKeySnapshot() string {
+	c.apiKeyMu.RLock()
+	defer c.apiKeyMu.RUnlock()
+	return c.apiKey
+}
+
+func (c *Client) credentialFingerprint() string {
+	sum := sha256.Sum256([]byte(c.apiKeySnapshot()))
+	return hex.EncodeToString(sum[:])
 }
 
 // APIError describes a non-success HTTP response from Wildberries.
@@ -95,7 +166,8 @@ type apiResponseError struct {
 }
 
 func (c *Client) getJSON(ctx context.Context, baseURL, path string, query url.Values, target any) error {
-	if c.apiKey == "" {
+	apiKey := c.apiKeySnapshot()
+	if apiKey == "" {
 		return errors.New("Wildberries API key is empty; provide a seller API key to NewClient")
 	}
 	parsedBase, err := url.Parse(baseURL)
@@ -110,7 +182,7 @@ func (c *Client) getJSON(ctx context.Context, baseURL, path string, query url.Va
 		if err != nil {
 			return fmt.Errorf("create Wildberries API request: %w", err)
 		}
-		request.Header.Set("Authorization", c.apiKey)
+		request.Header.Set("Authorization", apiKey)
 		request.Header.Set("Accept", "application/json")
 
 		started := time.Now()
@@ -139,7 +211,7 @@ func (c *Client) getJSON(ctx context.Context, baseURL, path string, query url.Va
 		}
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 			apiErr := newAPIError(request.Method, request.URL.Path, response, body)
-			apiErr.Message = strings.ReplaceAll(apiErr.Message, c.apiKey, "[redacted]")
+			apiErr.Message = strings.ReplaceAll(apiErr.Message, apiKey, "[redacted]")
 			return apiErr
 		}
 
