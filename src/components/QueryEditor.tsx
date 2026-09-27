@@ -7,6 +7,8 @@ import {
   MARKETPLACE_OPTIONS,
   MARKETPLACE_ROUTES,
   MAX_QUERY_LIMIT,
+  ALERT_METRIC_OPTIONS,
+  AlertMetric,
   MarketplaceDataSourceOptions,
   MarketplaceCategoryId,
   MarketplaceQueryType,
@@ -23,6 +25,9 @@ const MARKETPLACE_SELECT_OPTIONS: Array<SelectableValue<MarketplaceSelection>> =
 const QUERY_TYPE_SELECT_OPTIONS: Array<SelectableValue<MarketplaceQueryType>> = QUERY_TYPE_OPTIONS.map(
   ({ label, value }) => ({ label, value })
 );
+const ALERT_METRIC_SELECT_OPTIONS: Array<SelectableValue<AlertMetric>> = ALERT_METRIC_OPTIONS.map(
+  ({ label, value }) => ({ label, value })
+);
 const METHODS = [
   { label: 'GET', value: 'GET' as RequestMethod },
   { label: 'POST', value: 'POST' as RequestMethod },
@@ -30,6 +35,7 @@ const METHODS = [
 
 export function QueryEditor({ query, onChange, onRunQuery }: Props) {
   const isMetricsQuery = query.marketplace === 'metrics';
+  const isAlertQuery = isMetricsQuery && query.queryType === 'alert';
   const selectedMarketplace = query.selectedMarketplace ?? 'both';
   const categories = query.categories ?? [];
   const categoryOptions: Array<SelectableValue<MarketplaceCategoryId>> =
@@ -102,6 +108,25 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
           width={40}
         />
       </InlineField>
+      {isAlertQuery && (
+        <InlineField
+          label="Alert metric"
+          labelWidth={20}
+          tooltip="Returns only known numeric values as labeled time series. Unsupported or missing source data produces no data, never a zero."
+        >
+          <Select<AlertMetric>
+            aria-label="Alert metric"
+            options={ALERT_METRIC_SELECT_OPTIONS}
+            value={ALERT_METRIC_SELECT_OPTIONS.find((option) => option.value === query.alertMetric)}
+            onChange={(option) => {
+              if (option.value) {
+                update({ alertMetric: option.value }, true);
+              }
+            }}
+            width={40}
+          />
+        </InlineField>
+      )}
       <InlineField
         label="Categories"
         labelWidth={20}

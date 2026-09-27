@@ -1,0 +1,267 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: marketplace-profit-monitor
+    folder: Marketplace Profit Monitor
+    interval: 1m
+    rules:
+      # Paused until the marketplace providers supply product net-margin values.
+      - uid: marketplace-low-margin
+        title: Низкая маржинальность товара
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: marketplace-profit-monitor
+            model:
+              datasource:
+                type: pumba3000lvl-profitmonitor-datasource
+                uid: marketplace-profit-monitor
+              marketplace: metrics
+              selectedMarketplace: both
+              queryType: alert
+              alertMetric: netMarginPercent
+              refId: A
+              intervalMs: 60000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $B < 10
+              refId: C
+              type: math
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Маржинальность товара ниже 10%
+          description: "Маржинальность товара {{ $labels.product_id }} ({{ $labels.marketplace }}) ниже 10% в течение 5 минут. Текущее значение: {{ $values.B }}%."
+        labels:
+          severity: warning
+        isPaused: true
+
+      # Requires retained, per-product commission snapshots covering seven days.
+      - uid: marketplace-commission-increase
+        title: Рост комиссии маркетплейса
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 604800
+              to: 0
+            datasourceUid: marketplace-profit-monitor
+            model:
+              datasource:
+                type: pumba3000lvl-profitmonitor-datasource
+                uid: marketplace-profit-monitor
+              marketplace: metrics
+              selectedMarketplace: both
+              queryType: alert
+              alertMetric: commissionIncreasePercent
+              refId: A
+              intervalMs: 60000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $B > 5
+              refId: C
+              type: math
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Комиссия выросла более чем на 5% за 7 дней
+          description: "Рост комиссии по товару {{ $labels.product_id }} ({{ $labels.marketplace }}) превышает 5% относительно значения семь дней назад. Текущее значение: {{ $values.B }}%."
+        labels:
+          severity: warning
+        isPaused: true
+
+      # Competitor prices are not available from the configured marketplace providers.
+      - uid: marketplace-competitor-price
+        title: Цена выше цены конкурента
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: marketplace-profit-monitor
+            model:
+              datasource:
+                type: pumba3000lvl-profitmonitor-datasource
+                uid: marketplace-profit-monitor
+              marketplace: metrics
+              selectedMarketplace: both
+              queryType: alert
+              alertMetric: competitorPriceDiffPercent
+              refId: A
+              intervalMs: 60000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $B < -5
+              refId: C
+              type: math
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Цена товара ниже цены конкурента более чем на 5%
+          description: "Разница с ценой конкурента для товара {{ $labels.product_id }} ({{ $labels.marketplace }}) ниже -5%. Текущее значение: {{ $values.B }}%."
+        labels:
+          severity: warning
+        isPaused: true
+
+      # Neither per-product storage expense nor comparable revenue is currently available.
+      - uid: marketplace-storage-cost
+        title: Высокая доля расходов на хранение
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: marketplace-profit-monitor
+            model:
+              datasource:
+                type: pumba3000lvl-profitmonitor-datasource
+                uid: marketplace-profit-monitor
+              marketplace: metrics
+              selectedMarketplace: both
+              queryType: alert
+              alertMetric: storageCostToRevenuePercent
+              refId: A
+              intervalMs: 60000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $B > 15
+              refId: C
+              type: math
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Расходы на хранение превышают 15% выручки
+          description: "Расходы на хранение товара {{ $labels.product_id }} ({{ $labels.marketplace }}) превышают 15% выручки. Текущее значение: {{ $values.B }}%."
+        labels:
+          severity: warning
+        isPaused: true
+
+      # Paused until marketplace providers supply complete cost inputs and a net margin.
+      - uid: marketplace-negative-net-margin
+        title: Отрицательная чистая маржа товара
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: marketplace-profit-monitor
+            model:
+              datasource:
+                type: pumba3000lvl-profitmonitor-datasource
+                uid: marketplace-profit-monitor
+              marketplace: metrics
+              selectedMarketplace: both
+              queryType: alert
+              alertMetric: netMarginRUB
+              refId: A
+              intervalMs: 60000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $B < 0
+              refId: C
+              type: math
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Чистая маржа товара стала отрицательной
+          description: "Чистая маржа товара {{ $labels.product_id }} ({{ $labels.marketplace }}) ниже 0 ₽. Текущее значение: {{ $values.B }} ₽."
+        labels:
+          severity: critical
+        isPaused: true

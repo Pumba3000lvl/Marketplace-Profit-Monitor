@@ -74,6 +74,96 @@ func TestQueryModelReadsEditorOptions(t *testing.T) {
 	}
 }
 
+func TestAlertQueryReturnsLabeledSeriesOnlyForKnownValues(t *testing.T) {
+	marginPercent, marginRUB := 8.5, -12.25
+	datasource := &Datasource{
+		credentials: credentials{wildberriesToken: "wb-key"},
+		wildberriesProviderFactory: func() (marketplace.Provider, func() error, error) {
+			return testProvider{marketplace: marketplace.Wildberries, products: []marketplace.ProductMetrics{
+				{
+					Marketplace:      marketplace.Wildberries,
+					ProductID:        "product-1",
+					SellerSKU:        "SKU-1",
+					UpdatedAt:        time.Date(2026, time.September, 27, 9, 0, 0, 0, time.UTC),
+					NetMarginPercent: &marginPercent,
+					NetMargin:        &marginRUB,
+				},
+				{
+					Marketplace: marketplace.Wildberries,
+					ProductID:   "product-2",
+					UpdatedAt:   time.Date(2026, time.September, 27, 9, 0, 0, 0, time.UTC),
+				},
+			}}, nil, nil
+		},
+	}
+	response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
+		RefID: "A",
+		JSON:  json.RawMessage(`{"marketplace":"metrics","selectedMarketplace":"wildberries","queryType":"alert","alertMetric":"netMarginPercent"}`),
+	}}})
+	if err != nil {
+		t.Fatalf("QueryData() error = %v", err)
+	}
+	result := response.Responses["A"]
+	if result.Error != nil || result.Status != backend.StatusOK || len(result.Frames) != 1 {
+		t.Fatalf("alert response = %+v, want one successful alert series", result)
+	}
+	frame := result.Frames[0]
+	if frame.Rows() != 1 || frame.Fields[0].Name != "time" || frame.Fields[1].Name != "value" ||
+		frame.Fields[1].Type() != data.FieldTypeFloat64 || frame.Fields[1].At(0) != marginPercent {
+		t.Fatalf("alert frame = %+v, want one margin-percent value and timestamp", frame)
+	}
+	if frame.Fields[1].Labels["marketplace"] != "wb" ||
+		frame.Fields[1].Labels["product_id"] != "product-1" ||
+	frame.Fields[1].Labels["seller_sku"] != "SKU-1" {
+		t.Fatalf("alert labels = %v, want stable product labels", frame.Fields[1].Labels)
+	}
+
+	response, err = datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
+		RefID: "B",
+		JSON:  json.RawMessage(`{"marketplace":"metrics","selectedMarketplace":"wildberries","queryType":"alert","alertMetric":"netMarginRUB"}`),
+	}}})
+	if err != nil {
+		t.Fatalf("QueryData() without margin error = %v", err)
+	}
+	result = response.Responses["B"]
+	if result.Error != nil || len(result.Frames) != 1 || result.Frames[0].Rows() != 1 ||
+		result.Frames[0].Fields[1].At(0) != marginRUB {
+		t.Fatalf("net-margin RUB response = %+v, want one known value", result)
+	}
+}
+
+func TestAlertQueryDoesNotSubstituteUnsupportedOrMissingMetrics(t *testing.T) {
+	datasource := &Datasource{
+		credentials: credentials{wildberriesToken: "wb-key"},
+		wildberriesProviderFactory: func() (marketplace.Provider, func() error, error) {
+			return testProvider{marketplace: marketplace.Wildberries, products: []marketplace.ProductMetrics{{
+				Marketplace: marketplace.Wildberries,
+				ProductID:   "product-1",
+				CurrentPrice: floatPointer(100),
+				UpdatedAt: time.Date(2026, time.September, 27, 9, 0, 0, 0, time.UTC),
+			}}}, nil, nil
+		},
+	}
+	for _, metric := range []string{"netMarginPercent", "commissionIncreasePercent", "competitorPriceDiffPercent", "storageCostToRevenuePercent"} {
+		t.Run(metric, func(t *testing.T) {
+			response, err := datasource.QueryData(context.Background(), &backend.QueryDataRequest{Queries: []backend.DataQuery{{
+				RefID: "A",
+				JSON:  json.RawMessage(fmt.Sprintf(`{"marketplace":"metrics","selectedMarketplace":"wildberries","queryType":"alert","alertMetric":%q}`, metric)),
+			}}})
+			if err != nil {
+				t.Fatalf("QueryData() error = %v", err)
+			}
+			result := response.Responses["A"]
+			if result.Error != nil || result.Status != backend.StatusOK ||
+				len(result.Frames) != 1 || result.Frames[0].Rows() != 0 {
+				t.Fatalf("alert response = %+v, want successful empty series (NoData)", result)
+			}
+		})
+	}
+}
+
+func floatPointer(value float64) *float64 { return &value }
+
 type testProvider struct {
 	marketplace marketplace.Marketplace
 	products    []marketplace.ProductMetrics

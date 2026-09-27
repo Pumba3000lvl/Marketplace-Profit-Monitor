@@ -79,6 +79,7 @@ type queryModel struct {
 	Marketplace         string   `json:"marketplace"`
 	SelectedMarketplace string   `json:"selectedMarketplace"`
 	QueryType           string   `json:"queryType"`
+	AlertMetric         string   `json:"alertMetric"`
 	Categories          []string `json:"categories"`
 	Limit               *int     `json:"limit"`
 	Path                string   `json:"path"`
@@ -144,6 +145,12 @@ func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend
 	}
 	if !isSupportedQueryType(model.QueryType) {
 		return backend.ErrDataResponse(backend.StatusBadRequest, "unknown query type")
+	}
+	if model.QueryType == "alert" && !isSupportedAlertMetric(model.AlertMetric) {
+		return backend.ErrDataResponse(backend.StatusBadRequest, "unknown alert metric")
+	}
+	if model.QueryType == "alert" && model.Marketplace != "metrics" {
+		return backend.ErrDataResponse(backend.StatusBadRequest, "alert queries require the metrics marketplace")
 	}
 	if model.Limit != nil && (*model.Limit < 1 || *model.Limit > maxQueryLimit) {
 		return backend.ErrDataResponse(backend.StatusBadRequest, "maximum records must be between 1 and 100000")
@@ -423,7 +430,7 @@ func (d *Datasource) queryMetrics(ctx context.Context, query backend.DataQuery, 
 
 	result.Products = d.sanitizeProducts(limitedProducts(result.Products, model.Limit))
 	result.Groups, result.Warnings = marketplace.Merge(result.Products)
-	response := metricsQueryDataResponse(query, model.QueryType, result)
+	response := metricsQueryDataResponse(query, model.QueryType, model.AlertMetric, result)
 	attachProviderNotices(&response, result.Providers)
 	return response
 }
@@ -461,7 +468,17 @@ func selectedMarketplaces(value string) ([]marketplace.Marketplace, error) {
 
 func isSupportedQueryType(value string) bool {
 	switch value {
-	case "commissions", "prices", "profitability", "history":
+	case "commissions", "prices", "profitability", "history", "alert":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSupportedAlertMetric(value string) bool {
+	switch value {
+	case "netMarginPercent", "commissionIncreasePercent", "competitorPriceDiffPercent",
+		"storageCostToRevenuePercent", "netMarginRUB":
 		return true
 	default:
 		return false
@@ -475,7 +492,10 @@ func limitedProducts(products []marketplace.ProductMetrics, limit *int) []market
 	return products
 }
 
-func metricsQueryDataResponse(query backend.DataQuery, queryType string, result marketplace.CollectionResult) backend.DataResponse {
+func metricsQueryDataResponse(query backend.DataQuery, queryType, alertMetric string, result marketplace.CollectionResult) backend.DataResponse {
+	if queryType == "alert" {
+		return alertDataResponse(query, alertMetric, result.Products)
+	}
 	if queryType == "profitability" {
 		return metricsDataResponse(query, result, nil)
 	}
@@ -520,6 +540,63 @@ func metricsQueryDataResponse(query backend.DataQuery, queryType string, result 
 	frame.RefID = query.RefID
 	status := providerStatusFrame(query.RefID, result.Providers)
 	return backend.DataResponse{Frames: data.Frames{frame, status}, Status: backend.StatusOK}
+}
+
+func alertDataResponse(query backend.DataQuery, metric string, products []marketplace.ProductMetrics) backend.DataResponse {
+	var frames data.Frames
+	for _, product := range products {
+		value := alertMetricValue(product, metric)
+		if value == nil || product.UpdatedAt.IsZero() {
+			continue
+		}
+		labels := data.Labels{
+			"marketplace": string(product.Marketplace),
+			"product_id":  product.ProductID,
+		}
+		if product.SellerSKU != "" {
+			labels["seller_sku"] = product.SellerSKU
+		}
+		if product.VariantID != "" {
+			labels["variant_id"] = product.VariantID
+		}
+		field := data.NewField("value", labels, []float64{*value})
+		fieldConfig := &data.FieldConfig{}
+		switch metric {
+		case "netMarginPercent":
+			fieldConfig.DisplayNameFromDS = "Net Margin (%)"
+			fieldConfig.Unit = "percent"
+		case "netMarginRUB":
+			fieldConfig.DisplayNameFromDS = "Net Margin (RUB)"
+			fieldConfig.Unit = "currencyRUB"
+		}
+		field.SetConfig(fieldConfig)
+		frame := data.NewFrame("marketplace-alert",
+			data.NewField("time", nil, []time.Time{product.UpdatedAt.UTC()}),
+			field,
+		)
+		frame.RefID = query.RefID
+		frames = append(frames, frame)
+	}
+	if len(frames) == 0 {
+		frame := data.NewFrame("marketplace-alert",
+			data.NewField("time", nil, []time.Time{}),
+			data.NewField("value", data.Labels{}, []float64{}),
+		)
+		frame.RefID = query.RefID
+		frames = append(frames, frame)
+	}
+	return backend.DataResponse{Frames: frames, Status: backend.StatusOK}
+}
+
+func alertMetricValue(product marketplace.ProductMetrics, metric string) *float64 {
+	switch metric {
+	case "netMarginPercent":
+		return product.NetMarginPercent
+	case "netMarginRUB":
+		return product.NetMargin
+	default:
+		return nil
+	}
 }
 
 func providerStatusFrame(refID string, statuses []marketplace.ProviderStatus) *data.Frame {

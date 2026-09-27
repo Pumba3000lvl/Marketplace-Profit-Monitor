@@ -4,7 +4,13 @@ import { DataQuery } from '@grafana/schema';
 export type MarketplaceRoute = 'wb-tariffs' | 'wb-prices' | 'ozon' | 'metrics';
 export type RequestMethod = 'GET' | 'POST';
 export type MarketplaceSelection = 'wildberries' | 'ozon' | 'both';
-export type MarketplaceQueryType = 'commissions' | 'prices' | 'profitability' | 'history';
+export type MarketplaceQueryType = 'commissions' | 'prices' | 'profitability' | 'history' | 'alert';
+export type AlertMetric =
+  | 'netMarginPercent'
+  | 'commissionIncreasePercent'
+  | 'competitorPriceDiffPercent'
+  | 'storageCostToRevenuePercent'
+  | 'netMarginRUB';
 export type MarketplaceCategoryId = `wb:${string}` | `ozon:${string}`;
 
 export const MARKETPLACE_OPTIONS = [
@@ -18,7 +24,16 @@ export const QUERY_TYPE_OPTIONS = [
   { label: 'Prices', value: 'prices' },
   { label: 'Profitability', value: 'profitability' },
   { label: 'History', value: 'history' },
+  { label: 'Alert metric', value: 'alert' },
 ] as const;
+
+export const ALERT_METRIC_OPTIONS: Array<{ label: string; value: AlertMetric }> = [
+  { label: 'Net margin (%)', value: 'netMarginPercent' },
+  { label: 'Commission increase (%)', value: 'commissionIncreasePercent' },
+  { label: 'Competitor price difference (%)', value: 'competitorPriceDiffPercent' },
+  { label: 'Storage cost / revenue (%)', value: 'storageCostToRevenuePercent' },
+  { label: 'Net margin (RUB)', value: 'netMarginRUB' },
+];
 
 export interface MarketplaceCategoryOption {
   label: string;
@@ -63,6 +78,7 @@ export interface MarketplaceQuery extends DataQuery {
   body?: string;
   selectedMarketplace?: MarketplaceSelection;
   queryType?: MarketplaceQueryType;
+  alertMetric?: AlertMetric;
   categories?: MarketplaceCategoryId[];
   limit?: number;
 }
