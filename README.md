@@ -46,6 +46,52 @@ The client includes `GetUploadTask` and `GetUploadTaskDetails` for processed pri
 
 `GetPriceHistory(ctx, nmID, dateFrom, dateTo)` currently returns `ErrUploadTaskEnumerationUnsupported`. Wildberries' processed-history endpoints (`GET /api/v2/history/tasks` and `GET /api/v2/history/goods/task`) both require an `uploadID`, and the API does not expose an operation to enumerate those IDs. `GetPriceHistoryForUploads` can retrieve and filter price points when the caller already has the upload IDs. Those points represent changes submitted through the Wildberries API only; changes made manually in the seller cabinet are not available through these endpoints and are not included.
 
+## Ozon Seller API Go client
+
+The `pkg/ozon` package provides a typed client for product listing, current prices, and analytics:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/pumba3000lvl/marketplace-profit-monitor/pkg/ozon"
+)
+
+func main() {
+    ctx := context.Background()
+    client := ozon.NewClient(os.Getenv("OZON_CLIENT_ID"), os.Getenv("OZON_API_KEY"))
+
+    products, err := client.GetProductList(ctx, 1000, "")
+    if err != nil {
+        log.Fatal(err)
+    }
+    productIDs := make([]string, 0, len(products))
+    for _, product := range products {
+        productIDs = append(productIDs, product.ProductID)
+    }
+    prices, err := client.GetPrices(ctx, productIDs)
+    if err != nil {
+        log.Fatal(err)
+    }
+    analytics, err := client.GetAnalytics(ctx, "2026-01-01", "2026-01-31", []string{"revenue", "ordered_units"})
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("products=%d prices=%d analytics rows=%d\n", len(products), len(prices), len(analytics))
+}
+```
+
+Each request is a JSON `POST` with the `Client-Id` and `Api-Key` headers and a 30-second timeout. The client logs the HTTP method, path, status, duration, and Ozon request ID without logging credentials or request bodies. `APIError` exposes the HTTP status, Ozon error code/message, and request ID.
+
+The methods use `POST /v3/product/list`, `POST /v5/product/info/prices`, and `POST /v1/analytics/data`, respectively. `GetProductList` follows Ozon's `last_id` cursor through all pages, starting at the supplied cursor; it returns the accumulated products rather than one page. `GetPrices` deduplicates product IDs, batches selections to the API page-size limit, and follows the prices cursor. Price amounts are exposed as decimal strings in `PriceItem` to preserve Ozon's exact values. `GetAnalytics` retrieves all pages and groups results by day, the API-required default dimension because its signature accepts metrics but no dimension.
+
+See the [Ozon Seller API documentation](https://docs.ozon.ru/api/seller/) for available analytics metric names and endpoint limits.
+
 ### Calculating net margin
 
 `CalculateNetMargin` accepts monetary amounts as integer kopecks and returns a net margin, display percentage, and dashboard-ready expense breakdown. Pass commission as integer basis points (`100` = 1%, `10_000` = 100%). The optional ad cost defaults to zero; a zero cost price omits cost of goods. Commission is rounded to the nearest kopeck, with half-kopeck amounts rounded up. The margin percentage is calculated from the final integer amounts as `float64` for display only.
