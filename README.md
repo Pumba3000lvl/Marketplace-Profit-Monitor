@@ -6,13 +6,16 @@
 
 - Grafana 11 или новее.
 - Node.js 22 или новее и npm.
-- Docker с поддержкой Compose и запущенным Docker Engine. Makefile использует Go 1.23.5 или новее; если Go не установлен, для сборки и тестов backend нужен Docker.
+- Go 1.23.5 или новее для сборки backend на Linux, macOS и Windows.
+- Docker с поддержкой Compose и запущенным Docker Engine — только для локального запуска Grafana в контейнере.
 
 ## Сборка и локальный запуск
 
 Выполняйте команды из корня репозитория — каталога, в котором находится `docker-compose.yml`. Если Compose сообщает, что не найден файл конфигурации, перейдите в этот каталог или явно укажите файл через `-f`.
 
-Соберите frontend-пакет и исполняемый файл backend для Linux:
+### Docker Compose (рекомендуемый запуск)
+
+Compose запускает Grafana **в Linux-контейнере на всех хостах**, поэтому ему нужен Linux-бинарник backend — даже на Windows и macOS. Для Compose архитектура бинарника должна совпадать с архитектурой контейнера Grafana. На Linux/macOS `make build` собирает Linux-бинарник для архитектуры хоста:
 
 ```sh
 npm ci
@@ -20,7 +23,54 @@ make build
 docker compose up -d
 ```
 
+На Windows откройте PowerShell в корне проекта. Скрипт соберёт frontend на хосте и Linux/amd64 backend внутри контейнера Go, чтобы бинарник имел исполняемые права для Docker Desktop:
+
+```powershell
+npm ci
+.\scripts\build.ps1 -ForDocker -TargetArch amd64
+docker compose up -d
+```
+
+Если Docker Grafana работает как Linux/arm64, замените `amd64` на `arm64`. Аналогично, на Linux/macOS с архитектурой контейнера, отличающейся от хоста, задайте её явно: `make build TARGET_ARCH=amd64` или `make build TARGET_ARCH=arm64`. Не запускайте Compose с одним из native macOS/Windows-бинарников: Linux-контейнер Grafana не может их выполнить.
+
 Откройте [http://localhost:3000](http://localhost:3000) и войдите с начальными учётными данными Grafana для локальной разработки: `admin` / `admin`. Docker Compose создаёт источник данных **Мониторинг прибыли маркетплейсов (оповещения)** со стабильным UID `marketplace-profit-monitor`. Найдите его в разделе **Подключения → Источники данных** и укажите учётные данные нужных маркетплейсов. В файлах начальной настройки нет ключей доступа. API-ключи Wildberries и Ozon хранятся в зашифрованном поле Grafana `secureJsonData`, а Ozon Client-Id — в `jsonData`. При создании экземпляра backend Grafana расшифровывает защищённые настройки в `backend.DataSourceInstanceSettings.DecryptedSecureJSONData`; `QueryData` использует эти настройки экземпляра и не извлекает ключи из `PluginContext`. Перед проверкой подключения сохраните источник данных. Плагин проверяет только настроенные маркетплейсы через backend; встроенная проверка **Сохранить и проверить** в Grafana также выполняет запрос только на чтение к каждому настроенному маркетплейсу. Поля Telegram в редакторе источника данных оставлены для совместимости и не используются контактными точками оповещений, созданными через provisioning.
+
+### Native Grafana (Linux, macOS и Windows)
+
+Для native Grafana соберите backend под ОС и архитектуру самого Grafana-сервера. Имя файла должно начинаться с имени из `src/plugin.json` и включать платформу — например, `gpx_marketplace_profit_linux_amd64`, `gpx_marketplace_profit_darwin_arm64` или `gpx_marketplace_profit_windows_amd64.exe`. На Linux/macOS Makefile собирает шесть поддерживаемых вариантов (`linux`, `darwin`, `windows` × `amd64`, `arm64`) через `make backend-all`; для текущего компьютера используйте `make backend-native`. На Windows доступны те же варианты через PowerShell:
+
+```powershell
+npm ci
+.\scripts\build.ps1 -TargetOS windows -TargetArch amd64
+```
+
+Замените `windows`/`amd64` на нужные `linux`/`darwin` и `amd64`/`arm64`. Этот скрипт предназначен для сборки под Grafana на хосте; для Docker Compose на Windows используйте команду с `-ForDocker` выше.
+
+Укажите Grafana каталог плагинов, скопируйте туда содержимое `dist` в подпапку с ID плагина и разрешите загрузку этого неподписанного плагина **только для локальной разработки**. Linux/macOS (команды из корня репозитория):
+
+```sh
+npm ci
+make build TARGET_OS=darwin TARGET_ARCH=arm64  # пример для Apple Silicon; для Linux задайте linux и архитектуру сервера
+mkdir -p .local-grafana-plugins/pumba3000lvl-profitmonitor-datasource
+cp -R dist/. .local-grafana-plugins/pumba3000lvl-profitmonitor-datasource/
+export GF_PATHS_PLUGINS="$PWD/.local-grafana-plugins"
+export GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=pumba3000lvl-profitmonitor-datasource
+grafana server --homepath /путь/к/каталогу-установки-grafana
+```
+
+На Windows выполните эквивалентные шаги в PowerShell, заменив `windows`/`amd64` на архитектуру native Grafana:
+
+```powershell
+npm ci
+.\scripts\build.ps1 -TargetOS windows -TargetArch amd64
+New-Item -ItemType Directory -Force .\.local-grafana-plugins\pumba3000lvl-profitmonitor-datasource | Out-Null
+Copy-Item .\dist\* .\.local-grafana-plugins\pumba3000lvl-profitmonitor-datasource\ -Recurse -Force
+$env:GF_PATHS_PLUGINS = (Resolve-Path .\.local-grafana-plugins).Path
+$env:GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS = 'pumba3000lvl-profitmonitor-datasource'
+& 'C:\путь\к\Grafana\bin\grafana-server.exe' --homepath 'C:\путь\к\Grafana'
+```
+
+Замените пути запуска Grafana на реальные пути вашей установки. Сервер доступен на порту 3000 по умолчанию. Разрешение неподписанного плагина — настройка режима разработки, а не production-рекомендация. Compose уже настраивает эту опцию в своём контейнере; настройки Compose provisioning дашбордов, источника данных и правил применяются только к этому Compose-экземпляру Grafana, не к native-серверу.
 
 ### Дашборды Grafana
 
@@ -287,6 +337,6 @@ npm run lint
 npm run build
 ```
 
-После изменения `plugin.json` или frontend-кода перезапустите Grafana, чтобы она загрузила собранный плагин. После изменения Go-кода выполните `make backend` и перезапустите Grafana. Go-тесты запускаются командой `make test`; дополнительная статическая проверка — `go vet ./pkg/...`. Если Go не установлен, `make backend` и `make test` используют Docker.
+После изменения `plugin.json` или frontend-кода перезапустите Grafana, чтобы она загрузила собранный плагин. После изменения Go-кода выполните `make backend-native` для native Grafana либо `make backend` для Linux-контейнера и перезапустите Grafana. В Windows используйте `.\scripts\build.ps1 -TargetOS windows -TargetArch amd64` для native Grafana или `.\scripts\build.ps1 -ForDocker -TargetArch amd64` для Compose. Go-тесты запускаются командой `make test` (или `go test ./pkg/...` в PowerShell); дополнительная статическая проверка — `go vet ./pkg/...`. Если Go не установлен, Unix Makefile-команды сборки и тестирования используют Docker; Windows-скрипт поддерживает `-ForDocker` для backend-сборки в контейнере.
 
-Команда `make clean` удаляет собранные файлы из `dist/`. Для вклада в проект создайте отдельную рабочую ветку от актуальной целевой ветки, приложите к pull request описание изменений и результаты релевантных проверок. Не включайте в коммиты секреты, локальный `.env` или собранные артефакты. Не предоставляйте доступ к экземпляру Grafana для разработки с неподписанным плагином из недоверенной сети.
+Команда `make clean` удаляет собранные файлы из `dist/`. Кроссплатформенная CI проверяет frontend, Go-тесты и сборки на Linux, macOS и Windows, включая все шесть сочетаний ОС/архитектуры. Для вклада в проект создайте отдельную рабочую ветку от актуальной целевой ветки, приложите к pull request описание изменений и результаты релевантных проверок. Не включайте в коммиты секреты, локальный `.env` или собранные артефакты. Не предоставляйте доступ к экземпляру Grafana для разработки с неподписанным плагином из недоверенной сети.

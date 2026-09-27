@@ -1,0 +1,87 @@
+name: Cross-platform CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.5'
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Check frontend
+        run: |
+          npm run typecheck
+          npm run lint
+          npm run build
+
+      - name: Test Go backend
+        run: go test ./pkg/...
+
+      - name: Vet Go backend
+        run: go vet ./pkg/...
+
+      - name: Build all backend targets (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: make backend-all
+
+      - name: Verify backend artifact names (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          for os in linux darwin; do
+            for arch in amd64 arm64; do
+              test -x "dist/gpx_marketplace_profit_${os}_${arch}"
+            done
+          done
+          for arch in amd64 arm64; do
+            test -f "dist/gpx_marketplace_profit_windows_${arch}.exe"
+          done
+
+      - name: Build all backend targets (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build.ps1 -AllTargets -BackendOnly
+
+      - name: Verify backend artifact names (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($os in @('linux', 'darwin')) {
+            foreach ($arch in @('amd64', 'arm64')) {
+              if (-not (Test-Path "dist/gpx_marketplace_profit_${os}_${arch}")) {
+                throw "Missing artifact: ${os}/${arch}"
+              }
+            }
+          }
+          foreach ($arch in @('amd64', 'arm64')) {
+            if (-not (Test-Path "dist/gpx_marketplace_profit_windows_${arch}.exe")) {
+              throw "Missing artifact: windows/${arch}"
+            }
+          }
