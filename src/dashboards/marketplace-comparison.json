@@ -1,0 +1,96 @@
+{
+  "id": null,
+  "uid": "mpm-marketplace-comparison",
+  "title": "Сравнение Wildberries и Ozon",
+  "tags": ["marketplace-profit-monitor", "comparison"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": { "from": "now-30d", "to": "now" },
+  "timepicker": { "refresh_intervals": ["1m", "5m", "15m", "30m", "1h"], "time_options": ["7d", "30d", "90d"] },
+  "templating": {
+    "list": [
+      {
+        "type": "datasource", "name": "datasource", "label": "Источник данных",
+        "query": "pumba3000lvl-profitmonitor-datasource", "refresh": 1, "regex": "", "options": [],
+        "current": { "selected": true, "text": "Мониторинг прибыли маркетплейсов (оповещения)", "value": "marketplace-profit-monitor" },
+        "multi": false, "includeAll": false, "hide": 0
+      },
+      {
+        "type": "custom", "name": "marketplace", "label": "Маркетплейс",
+        "query": "wildberries,ozon,both",
+        "options": [
+          { "selected": false, "text": "Wildberries", "value": "wildberries" },
+          { "selected": false, "text": "Ozon", "value": "ozon" },
+          { "selected": true, "text": "Оба", "value": "both" }
+        ],
+        "current": { "selected": true, "text": "Оба", "value": "both" },
+        "multi": false, "includeAll": false, "hide": 0
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1, "datasource": { "type": "grafana", "uid": "-- Grafana --" }, "enable": true,
+        "hide": true, "iconColor": "rgba(0, 211, 255, 1)", "name": "Annotations & Alerts", "type": "dashboard"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Предложения по маркетплейсам и SKU",
+      "description": "Строки показывают товары обоих маркетплейсов; одинаковый sellerSku позволяет сопоставить предложения визуально.",
+      "datasource": { "type": "pumba3000lvl-profitmonitor-datasource", "uid": "${datasource}" },
+      "gridPos": { "h": 15, "w": 24, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "currentPrice" },
+            "properties": [
+              { "id": "unit", "value": "currencyRUB" },
+              { "id": "decimals", "value": 2 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "commissionRatePercent" },
+            "properties": [{ "id": "unit", "value": "percent" }]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "cellHeight": "sm" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "pumba3000lvl-profitmonitor-datasource", "uid": "${datasource}" },
+          "marketplace": "metrics",
+          "selectedMarketplace": "$marketplace",
+          "queryType": "profitability",
+          "limit": 1000,
+          "intervalMs": 60000,
+          "maxDataPoints": 43200
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "text",
+      "title": "Правила сопоставления и ограничения",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 15 },
+      "options": {
+        "mode": "markdown",
+        "content": "Datasource объединяет предложения только по нормализованному артикулу продавца (SKU); названия и ID маркетплейсов для сопоставления не используются. Текущая таблица показывает доступные строки товаров, а `merged-products` содержит список парных предложений в JSON и не преобразуется этим шаблоном в отдельные колонки WB/Ozon. Себестоимость и чистая маржа пока не предоставляются; сравниваются только реальные цены и доступные ставки комиссии."
+      },
+      "targets": []
+    }
+  ],
+  "links": [],
+  "liveNow": false,
+  "editable": true,
+  "graphTooltip": 0,
+  "fiscalYearStartMonth": 0,
+  "refresh": "5m"
+}

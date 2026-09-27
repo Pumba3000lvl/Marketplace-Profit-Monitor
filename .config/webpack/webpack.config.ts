@@ -28,6 +28,7 @@ const pluginId = plugin.id as string;
 const logoPaths = [...new Set([plugin.info.logos.small, plugin.info.logos.large])];
 const copyPatterns = [
   { from: 'plugin.json', to: '.' },
+  { from: 'dashboards', to: 'dashboards' },
   ...logoPaths.map((logo: string) => ({ from: logo, to: logo })),
 ];
 

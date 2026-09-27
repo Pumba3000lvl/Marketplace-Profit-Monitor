@@ -1,0 +1,211 @@
+{
+  "id": null,
+  "uid": "mpm-store-overview",
+  "title": "Обзор магазина",
+  "tags": ["marketplace-profit-monitor", "overview"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": ["1m", "5m", "15m", "30m", "1h"],
+    "time_options": ["7d", "30d", "90d"]
+  },
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "datasource",
+        "label": "Источник данных",
+        "query": "pumba3000lvl-profitmonitor-datasource",
+        "refresh": 1,
+        "regex": "",
+        "options": [],
+        "current": {
+          "selected": true,
+          "text": "Мониторинг прибыли маркетплейсов (оповещения)",
+          "value": "marketplace-profit-monitor"
+        },
+        "multi": false,
+        "includeAll": false,
+        "hide": 0
+      },
+      {
+        "type": "custom",
+        "name": "marketplace",
+        "label": "Маркетплейс",
+        "query": "wildberries,ozon,both",
+        "options": [
+          { "selected": false, "text": "Wildberries", "value": "wildberries" },
+          { "selected": false, "text": "Ozon", "value": "ozon" },
+          { "selected": true, "text": "Оба", "value": "both" }
+        ],
+        "current": { "selected": true, "text": "Оба", "value": "both" },
+        "multi": false,
+        "includeAll": false,
+        "hide": 0
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Выручка Ozon за выбранный период",
+      "description": "Сумма дневной выручки из аналитики Ozon. Источник Wildberries для истории пока не реализован.",
+      "datasource": { "type": "pumba3000lvl-profitmonitor-datasource", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyRUB",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "values": false, "calcs": ["sum"], "fields": "revenue" },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "showPercentChange": false
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "pumba3000lvl-profitmonitor-datasource", "uid": "${datasource}" },
+          "marketplace": "metrics",
+          "selectedMarketplace": "ozon",
+          "queryType": "history",
+          "intervalMs": 60000,
+          "maxDataPoints": 43200
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Топ-5 по текущей цене",
+      "description": "Это товары с наибольшей текущей ценой, а не рейтинг по продажам или марже.",
+      "datasource": { "type": "pumba3000lvl-profitmonitor-datasource", "uid": "${datasource}" },
+      "gridPos": { "h": 9, "w": 16, "x": 8, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "netMarginPercent" },
+            "properties": [
+              { "id": "unit", "value": "percent" },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "red", "value": null },
+                    { "color": "yellow", "value": 0 },
+                    { "color": "green", "value": 10 }
+                  ]
+                }
+              },
+              { "id": "color", "value": { "mode": "thresholds" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "netMargin" },
+            "properties": [
+              { "id": "unit", "value": "currencyRUB" },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "red", "value": null },
+                    { "color": "green", "value": 0 }
+                  ]
+                }
+              },
+              { "id": "color", "value": { "mode": "thresholds" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [{ "displayName": "Текущая цена", "desc": true }]
+      },
+      "transformations": [
+        { "id": "sortBy", "options": { "sort": [{ "field": "currentPrice", "desc": true }] } },
+        { "id": "limit", "options": { "limit": 5 } }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "pumba3000lvl-profitmonitor-datasource", "uid": "${datasource}" },
+          "marketplace": "metrics",
+          "selectedMarketplace": "$marketplace",
+          "queryType": "profitability",
+          "limit": 1000,
+          "intervalMs": 60000,
+          "maxDataPoints": 43200
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "alertlist",
+      "title": "Состояние правил оповещения Grafana",
+      "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 9 },
+      "options": {
+        "show": "current",
+        "maxItems": 10,
+        "sortOrder": 1,
+        "dashboardAlerts": false,
+        "alertName": ""
+      },
+      "targets": []
+    },
+    {
+      "id": 4,
+      "type": "text",
+      "title": "Маржа и полнота данных",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 17 },
+      "options": {
+        "mode": "markdown",
+        "content": "### Чистая маржа пока не рассчитывается\n\nПоставщики не предоставляют все расходы, необходимые для расчёта `netMargin` и `netMarginPercent`. Поля остаются пустыми, а правила оповещения маркетплейсов приостановлены; пустые значения не означают нулевую маржу. Выручка выше — только аналитика Ozon."
+      },
+      "targets": []
+    }
+  ],
+  "links": [],
+  "liveNow": false,
+  "editable": true,
+  "graphTooltip": 0,
+  "fiscalYearStartMonth": 0
+}

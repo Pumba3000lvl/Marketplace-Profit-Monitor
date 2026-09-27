@@ -1,0 +1,143 @@
+{
+  "id": null,
+  "uid": "mpm-commission-dynamics",
+  "title": "Динамика комиссий",
+  "tags": ["marketplace-profit-monitor", "commissions"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": { "from": "now-30d", "to": "now" },
+  "timepicker": { "refresh_intervals": ["1m", "5m", "15m", "30m", "1h"], "time_options": ["7d", "30d", "90d"] },
+  "templating": {
+    "list": [
+      {
+        "type": "datasource", "name": "datasource", "label": "Источник данных",
+        "query": "pumba3000lvl-profitmonitor-datasource", "refresh": 1, "regex": "", "options": [],
+        "current": { "selected": true, "text": "Мониторинг прибыли маркетплейсов (оповещения)", "value": "marketplace-profit-monitor" },
+        "multi": false, "includeAll": false, "hide": 0
+      },
+      {
+        "type": "custom", "name": "marketplace", "label": "Маркетплейс",
+        "query": "wildberries,ozon,both",
+        "options": [
+          { "selected": false, "text": "Wildberries", "value": "wildberries" },
+          { "selected": false, "text": "Ozon", "value": "ozon" },
+          { "selected": true, "text": "Оба", "value": "both" }
+        ],
+        "current": { "selected": true, "text": "Оба", "value": "both" },
+        "multi": false, "includeAll": false, "hide": 0
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1, "datasource": { "type": "grafana", "uid": "-- Grafana --" }, "enable": true,
+        "hide": true, "iconColor": "rgba(0, 211, 255, 1)", "name": "Annotations & Alerts", "type": "dashboard"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Рост комиссии за период (%)",
+      "description": "Будет заполнен, когда datasource начнёт сохранять снимки ставок комиссии во времени.",
+      "datasource": { "type": "pumba3000lvl-profitmonitor-datasource", "uid": "${datasource}" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 10 }
+            ]
+          },
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10, "showPoints": "auto", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "single", "sort": "none" },
+        "legend": { "showLegend": true, "displayMode": "list", "placement": "bottom", "calcs": [] }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "pumba3000lvl-profitmonitor-datasource", "uid": "${datasource}" },
+          "marketplace": "metrics",
+          "selectedMarketplace": "$marketplace",
+          "queryType": "alert",
+          "alertMetric": "commissionIncreasePercent",
+          "intervalMs": 60000,
+          "maxDataPoints": 43200
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Текущие ставки комиссии",
+      "description": "Снимок текущих значений не является историческим рядом.",
+      "datasource": { "type": "pumba3000lvl-profitmonitor-datasource", "uid": "${datasource}" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 12 },
+      "fieldConfig": {
+        "defaults": { "unit": "percent" },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "commissionRatePercent" },
+            "properties": [
+              { "id": "unit", "value": "percent" },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "yellow", "value": 20 },
+                    { "color": "red", "value": 30 }
+                  ]
+                }
+              },
+              { "id": "color", "value": { "mode": "thresholds" } }
+            ]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "cellHeight": "sm" },
+      "targets": [
+        {
+          "refId": "B",
+          "datasource": { "type": "pumba3000lvl-profitmonitor-datasource", "uid": "${datasource}" },
+          "marketplace": "metrics",
+          "selectedMarketplace": "$marketplace",
+          "queryType": "commissions",
+          "limit": 1000,
+          "intervalMs": 60000,
+          "maxDataPoints": 43200
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "text",
+      "title": "Ограничение исторических данных",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 21 },
+      "options": {
+        "mode": "markdown",
+        "content": "Сейчас datasource предоставляет только текущие ставки Wildberries; комиссия Ozon не возвращается. Снимки ставок не сохраняются, поэтому `commissionIncreasePercent` намеренно возвращает пустой ряд. Пороговые уровни на временной диаграмме — ориентиры для будущей реализации, а не текущие оповещения."
+      },
+      "targets": []
+    }
+  ],
+  "links": [],
+  "liveNow": false,
+  "editable": true,
+  "graphTooltip": 0,
+  "fiscalYearStartMonth": 0,
+  "refresh": "5m"
+}
