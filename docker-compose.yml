@@ -14,6 +14,7 @@ services:
     volumes:
       - ./dist:/var/lib/grafana/plugins/pumba3000lvl-profitmonitor-datasource:ro
       - ./provisioning/alerting:/etc/grafana/provisioning/alerting:ro
+      - ./provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./provisioning/datasources:/etc/grafana/provisioning/datasources:ro
       - grafana-data:/var/lib/grafana
 

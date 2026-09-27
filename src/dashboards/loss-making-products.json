@@ -1,0 +1,114 @@
+{
+  "id": null,
+  "uid": "mpm-loss-making-products",
+  "title": "Убыточные товары",
+  "tags": ["marketplace-profit-monitor", "loss"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": { "from": "now-30d", "to": "now" },
+  "timepicker": { "refresh_intervals": ["1m", "5m", "15m", "30m", "1h"], "time_options": ["7d", "30d", "90d"] },
+  "templating": {
+    "list": [
+      {
+        "type": "datasource", "name": "datasource", "label": "Источник данных",
+        "query": "pumba3000lvl-profitmonitor-datasource", "refresh": 1, "regex": "", "options": [],
+        "current": { "selected": true, "text": "Мониторинг прибыли маркетплейсов (оповещения)", "value": "marketplace-profit-monitor" },
+        "multi": false, "includeAll": false, "hide": 0
+      },
+      {
+        "type": "custom", "name": "marketplace", "label": "Маркетплейс",
+        "query": "wildberries,ozon,both",
+        "options": [
+          { "selected": false, "text": "Wildberries", "value": "wildberries" },
+          { "selected": false, "text": "Ozon", "value": "ozon" },
+          { "selected": true, "text": "Оба", "value": "both" }
+        ],
+        "current": { "selected": true, "text": "Оба", "value": "both" },
+        "multi": false, "includeAll": false, "hide": 0
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1, "datasource": { "type": "grafana", "uid": "-- Grafana --" }, "enable": true,
+        "hide": true, "iconColor": "rgba(0, 211, 255, 1)", "name": "Annotations & Alerts", "type": "dashboard"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Товары с чистой маржой ниже нуля",
+      "description": "Фильтрация по netMargin < 0 эквивалентна убыточности только для рассчитанной маржи; у текущих поставщиков значений пока нет.",
+      "datasource": { "type": "pumba3000lvl-profitmonitor-datasource", "uid": "${datasource}" },
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "currencyRUB" },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "netMargin" },
+            "properties": [
+              { "id": "unit", "value": "currencyRUB" },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "red", "value": null },
+                    { "color": "green", "value": 0 }
+                  ]
+                }
+              },
+              { "id": "color", "value": { "mode": "thresholds" } }
+            ]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "cellHeight": "sm" },
+      "transformations": [
+        {
+          "id": "filterByValue",
+          "options": {
+            "filters": [
+              { "fieldName": "netMargin", "config": { "id": "less", "options": { "value": 0 } } }
+            ],
+            "type": "include",
+            "match": "all"
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "pumba3000lvl-profitmonitor-datasource", "uid": "${datasource}" },
+          "marketplace": "metrics",
+          "selectedMarketplace": "$marketplace",
+          "queryType": "profitability",
+          "limit": 1000,
+          "intervalMs": 60000,
+          "maxDataPoints": 43200
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "text",
+      "title": "Примечание к фильтру",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 14 },
+      "options": {
+        "mode": "markdown",
+        "content": "### `is_loss` пока не входит в схему datasource\n\nТаблица использует доступное поле `netMargin` и отбирает значения ниже 0. Чистая маржа сейчас остаётся пустой, так как не заданы все расходы, поэтому таблица не покажет строки. После реализации расчёта datasource можно добавить поле `is_loss` и фильтровать по `is_loss = true`."
+      },
+      "targets": []
+    }
+  ],
+  "links": [],
+  "liveNow": false,
+  "editable": true,
+  "graphTooltip": 0,
+  "fiscalYearStartMonth": 0,
+  "refresh": "5m"
+}
