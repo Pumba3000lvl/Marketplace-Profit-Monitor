@@ -20,6 +20,7 @@ type CommissionItem struct {
 type Product struct {
 	NmID                    int64                        `json:"nmID"`
 	VendorCode              string                       `json:"vendorCode"`
+	SubjectID               int64                        `json:"subjectID"`
 	Sizes                   []ProductSize                `json:"sizes"`
 	CurrencyIsoCode4217     string                       `json:"currencyIsoCode4217"`
 	Discount                int                          `json:"discount"`

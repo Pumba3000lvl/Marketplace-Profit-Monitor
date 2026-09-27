@@ -56,6 +56,7 @@ package main
 import (
     "context"
     "fmt"
+    "os"
     "log"
     "os"
 
@@ -91,6 +92,51 @@ Each request is a JSON `POST` with the `Client-Id` and `Api-Key` headers and a 3
 The methods use `POST /v3/product/list`, `POST /v5/product/info/prices`, and `POST /v1/analytics/data`, respectively. `GetProductList` follows Ozon's `last_id` cursor through all pages, starting at the supplied cursor; it returns the accumulated products rather than one page. `GetPrices` deduplicates product IDs, batches selections to the API page-size limit, and follows the prices cursor. Price amounts are exposed as decimal strings in `PriceItem` to preserve Ozon's exact values. `GetAnalytics` retrieves all pages and groups results by day, the API-required default dimension because its signature accepts metrics but no dimension.
 
 See the [Ozon Seller API documentation](https://docs.ozon.ru/api/seller/) for available analytics metric names and endpoint limits.
+
+## Unified marketplace metrics
+
+The `pkg/marketplace` package adapts the typed Wildberries and Ozon clients to one `ProductMetrics` shape. Each row retains its marketplace-specific product ID (`nmID` for Wildberries, Ozon `offer_id`); Ozon's internal numeric `product_id` is also preserved as `MarketplaceProductID` for joining to price responses. Rows include seller SKU, variant identity when applicable, RUB price, available commission values, and retrieval timestamp. `Collect` reports marketplace status independently and keeps rows returned by a provider even when a later request from that same provider fails. `Merge` groups rows only by a trimmed, case-folded seller SKU; it never matches by name or assumes marketplace IDs are shared. Grouped offers remain separate, so prices and costs are not overwritten.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+
+    "github.com/pumba3000lvl/marketplace-profit-monitor/pkg/marketplace"
+    "github.com/pumba3000lvl/marketplace-profit-monitor/pkg/ozon"
+    "github.com/pumba3000lvl/marketplace-profit-monitor/pkg/wildberries"
+)
+
+func main() {
+    ctx := context.Background()
+    wbClient := wildberries.NewClient(os.Getenv("WILDBERRIES_TOKEN"))
+    defer wbClient.Close()
+    ozonClient := ozon.NewClient(os.Getenv("OZON_CLIENT_ID"), os.Getenv("OZON_API_KEY"))
+
+    result, err := marketplace.Collect(ctx,
+        marketplace.NewWildberriesProvider(wbClient),
+        marketplace.NewOzonProvider(ozonClient),
+    )
+    if err != nil { // Collection-level cancellation; partial results are still in result.
+        fmt.Printf("collection stopped: %v\n", err)
+    }
+    for _, status := range result.Providers {
+        fmt.Printf("%s: %s (%d products): %s\n",
+            status.Marketplace, status.State, status.ProductCount, status.Error)
+    }
+    for _, group := range result.Groups {
+        fmt.Printf("seller SKU %q has %d marketplace offers\n", group.SellerSKU, len(group.Offers))
+    }
+}
+```
+
+Unavailable amounts are `nil`, not zero. Current clients expose Wildberries' category commission rate and price, plus Ozon's decimal-string price; they do not provide a product name, unit cost, or per-product logistics/storage costs. Accordingly, names and unavailable costs remain empty/nil, and net margin is not fabricated. Wildberries commission amount is derived only when its product subject can be matched to the commission report; Ozon commission and fulfillment costs remain unavailable. Net margin is `current price - commission - logistics - storage - cost price`; to calculate it, first populate all five values in RUB, then call `marketplace.CalculateNetMargin`. The function rejects missing inputs and uses kopecks for monetary arithmetic. Non-RUB prices are left unavailable.
+
+Merge warnings identify offers without a seller SKU (kept as separate groups) and multiple distinct product IDs sharing a seller SKU within one marketplace (all are retained). Wildberries sizes are separate offers with the same `nmID` and distinct variant IDs; they are not reported as duplicate products.
+
+In Grafana's query editor, choose **All marketplaces — product metrics** for this normalized collection. It returns flat product metrics, a grouped frame with a JSON array of the marketplace-specific offers for each SKU, per-marketplace status, and merge warnings; existing raw API route queries are unchanged. Configure the credentials for each marketplace you want to include. A missing credential or marketplace outage appears in the status frame while data from the other provider remains available.
 
 ### Calculating net margin
 
